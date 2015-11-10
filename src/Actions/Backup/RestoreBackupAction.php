@@ -13,10 +13,13 @@ use Capell\Core\Support\Backup\DatabaseBackupDriverRegistry;
 use Capell\Core\Support\Process\ArtisanProcessEnvironment;
 use Capell\Core\Support\Process\ProcessFactoryInterface;
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Filesystem\FilesystemManager;
+use Illuminate\Filesystem\LocalFilesystemAdapter;
 use InvalidArgumentException;
 use Lorisleiva\Actions\Concerns\AsFake;
 use Lorisleiva\Actions\Concerns\AsObject;
+use Normalizer;
 use RuntimeException;
 use Throwable;
 
@@ -36,6 +39,28 @@ final class RestoreBackupAction
         private readonly ProcessFactoryInterface $processes,
     ) {}
 
+    /**
+     * Colons are ordinary filename characters on POSIX filesystems, so backups
+     * holding names like `report 10:30.pdf` must restore. On Windows any colon
+     * in a segment addresses an NTFS alternate data stream (`file.txt:hidden`,
+     * typed or not), and a trailing dot or space is silently stripped, so both
+     * are rejected there.
+     */
+    public static function isSafeRelativePath(string $path, string $osFamily = PHP_OS_FAMILY): bool
+    {
+        $path = str_replace('\\', '/', $path);
+
+        if ($path === '' || str_starts_with($path, '/') || preg_match('/[\x00-\x1f\x7f]/', $path) === 1
+            || preg_match('/^[A-Za-z]:/', $path) === 1 || preg_match('/:[^\/]*:\$/', $path) === 1) {
+            return false;
+        }
+
+        $windows = $osFamily === 'Windows';
+
+        return array_all(explode('/', $path), static fn (string $segment): bool => ! in_array($segment, ['', '.', '..'], true)
+            && (! $windows || (! str_contains($segment, ':') && preg_match('/[. ]$/', $segment) !== 1)));
+    }
+
     public function handle(
         string $snapshotId,
         string $scratchDatabase,
@@ -50,7 +75,7 @@ final class RestoreBackupAction
         $this->assertScratchDatabase($manifest, $scratchDatabase);
         $this->assertMediaTarget($manifest, $mediaDisk, $mediaPrefix);
         $this->assertArtifacts($manifest);
-        $temporaryFiles = new BackupTemporaryFiles;
+        $temporaryFiles = resolve(BackupTemporaryFiles::class);
 
         try {
             $compressedDatabase = $temporaryFiles->create('capell-restore-gzip-');
@@ -58,11 +83,13 @@ final class RestoreBackupAction
             $this->store->download($manifest->database->path, $compressedDatabase);
             $this->assertLocalArtifact($manifest->database, $compressedDatabase);
             $this->gunzip($compressedDatabase, $databaseArtifact);
+            $temporaryFiles->release($compressedDatabase);
             $restoredDatabase = $this->drivers->for($manifest->databaseDriver)->restore(
                 $manifest->connectionName,
                 $databaseArtifact,
                 $scratchDatabase,
             );
+            $temporaryFiles->release($databaseArtifact);
             $mediaFiles = $this->restoreMedia($manifest, $mediaDisk, $mediaPrefix, $temporaryFiles);
             $doctorStatus = $this->runDoctor($manifest->connectionName, $restoredDatabase);
 
@@ -103,18 +130,103 @@ final class RestoreBackupAction
 
         throw_if($mediaDisk === null || $mediaDisk === '' || $mediaPrefix === null || $mediaPrefix === '', InvalidArgumentException::class, 'Media restore requires a scratch media disk and non-empty prefix.');
 
-        $liveDisks = array_values(array_unique(array_filter(array_map(
-            static fn (BackupArtifactData $artifact): ?string => $artifact->sourceDisk,
-            $manifest->media,
-        ))));
+        $configuredMediaDisks = $this->config->get('backup.media_disks', []);
+        throw_unless(is_array($configuredMediaDisks), RuntimeException::class, 'Backup media disks must be an array.');
+        $liveDisks = array_values(array_unique(array_filter([
+            $this->store->diskName(),
+            ...$configuredMediaDisks,
+            ...array_map(static fn (BackupArtifactData $artifact): ?string => $artifact->sourceDisk, $manifest->media),
+        ], static fn (mixed $disk): bool => is_string($disk) && $disk !== '')));
 
-        throw_if($mediaDisk === $this->store->diskName() || in_array($mediaDisk, $liveDisks, true), InvalidArgumentException::class, 'Scratch media disk must be different from every live media disk and the backup disk.');
+        throw_if(in_array($mediaDisk, $liveDisks, true), InvalidArgumentException::class, 'Scratch media disk must be different from every live media disk and the backup disk.');
 
         throw_unless($this->safeRelativePath($mediaPrefix), InvalidArgumentException::class, 'Scratch media prefix is unsafe.');
 
+        $targetPaths = $this->mediaTargetPaths($manifest, $mediaPrefix);
+
         $targetDisk = $this->filesystems->disk($mediaDisk);
 
+        $this->assertLocalMediaTargetPath($targetDisk, $mediaPrefix);
+        foreach ($targetPaths as $targetPath) {
+            $this->assertLocalMediaTargetPath($targetDisk, $targetPath);
+        }
+
         throw_if($targetDisk->exists($mediaPrefix) || $targetDisk->allFiles($mediaPrefix) !== [], InvalidArgumentException::class, 'Scratch media prefix must be empty.');
+    }
+
+    private function assertLocalMediaTargetPath(Filesystem $targetDisk, string $targetPath): void
+    {
+        if (! $targetDisk instanceof LocalFilesystemAdapter) {
+            return;
+        }
+
+        $diskPath = $targetDisk->path('');
+        $resolvedDiskPath = realpath($diskPath);
+
+        throw_unless(is_string($resolvedDiskPath), InvalidArgumentException::class, __('capell-core::backup.destinations_collide'));
+
+        $candidate = rtrim($diskPath, '/\\');
+
+        foreach (explode('/', str_replace('\\', '/', $targetPath)) as $segment) {
+            $candidate .= DIRECTORY_SEPARATOR . $segment;
+
+            if (! file_exists($candidate) && ! is_link($candidate)) {
+                continue;
+            }
+
+            $resolvedCandidate = realpath($candidate);
+
+            throw_if(! is_string($resolvedCandidate) || ! is_dir($resolvedCandidate)
+                || ! $this->pathIsWithin($resolvedCandidate, $resolvedDiskPath), InvalidArgumentException::class, __('capell-core::backup.destinations_collide'));
+        }
+    }
+
+    private function pathIsWithin(string $path, string $root): bool
+    {
+        $path = rtrim(str_replace('\\', '/', $path), '/');
+        $root = rtrim(str_replace('\\', '/', $root), '/');
+
+        if (PHP_OS_FAMILY === 'Windows') {
+            $path = mb_strtolower($path, 'UTF-8');
+            $root = mb_strtolower($root, 'UTF-8');
+        }
+
+        return $path === $root || str_starts_with($path, $root . '/');
+    }
+
+    /** @return list<string> */
+    private function mediaTargetPaths(BackupManifestData $manifest, string $mediaPrefix): array
+    {
+        $sourceDisks = array_unique(array_map(static fn (BackupArtifactData $artifact): ?string => $artifact->sourceDisk, $manifest->media));
+        $multipleDisks = count($sourceDisks) > 1;
+        $targets = [];
+        $occupied = [];
+
+        foreach ($manifest->media as $artifact) {
+            throw_if($artifact->sourceDisk === null || ! $this->safeRelativePath($artifact->sourceDisk)
+                || str_contains($artifact->sourceDisk, '/') || str_contains($artifact->sourceDisk, '\\')
+                || $artifact->sourcePath === null || ! $this->safeRelativePath($artifact->sourcePath), RuntimeException::class, __('capell-core::backup.unsafe_source'));
+
+            $target = str_replace('\\', '/', $mediaPrefix) . '/'
+                . ($multipleDisks ? rawurlencode($artifact->sourceDisk) . '/' : '')
+                . str_replace('\\', '/', $artifact->sourcePath);
+            // Compare canonical Unicode spellings and case before any mutation;
+            // scratch filesystems can treat those distinct manifest paths as one.
+            $portableTarget = Normalizer::normalize(mb_strtolower($target, 'UTF-8'));
+            throw_if($portableTarget === false, RuntimeException::class, __('capell-core::backup.unsafe_source'));
+
+            throw_if(isset($occupied[$portableTarget]), RuntimeException::class, __('capell-core::backup.destinations_collide'));
+            $occupied[$portableTarget] = true;
+            $targets[] = $target;
+        }
+
+        foreach (array_keys($occupied) as $target) {
+            for ($parent = dirname($target); $parent !== '.'; $parent = dirname($parent)) {
+                throw_if(isset($occupied[$parent]), RuntimeException::class, __('capell-core::backup.destinations_collide'));
+            }
+        }
+
+        return $targets;
     }
 
     private function assertArtifacts(BackupManifestData $manifest): void
@@ -177,8 +289,9 @@ final class RestoreBackupAction
         throw_if($mediaDisk === null || $mediaPrefix === null, RuntimeException::class, 'Scratch media target was not validated.');
 
         $target = $this->filesystems->disk($mediaDisk);
+        $targetPaths = $this->mediaTargetPaths($manifest, $mediaPrefix);
 
-        foreach ($manifest->media as $artifact) {
+        foreach ($manifest->media as $index => $artifact) {
             throw_if($artifact->sourcePath === null || ! $this->safeRelativePath($artifact->sourcePath), RuntimeException::class, 'Backup media artifact has an unsafe source path.');
 
             $temporaryPath = $temporaryFiles->create('capell-restore-media-');
@@ -189,10 +302,13 @@ final class RestoreBackupAction
             throw_if($stream === false, RuntimeException::class, 'Unable to read a restored media artifact.');
 
             try {
-                throw_unless($target->put(rtrim($mediaPrefix, '/') . '/' . $artifact->sourcePath, $stream), RuntimeException::class, 'Unable to write a restored media artifact.');
+                $this->assertLocalMediaTargetPath($target, $targetPaths[$index]);
+                throw_unless($target->put($targetPaths[$index], $stream), RuntimeException::class, 'Unable to write a restored media artifact.');
             } finally {
                 fclose($stream);
             }
+
+            $temporaryFiles->release($temporaryPath);
         }
 
         return count($manifest->media);
@@ -227,11 +343,7 @@ final class RestoreBackupAction
 
     private function safeRelativePath(string $path): bool
     {
-        if ($path === '' || str_starts_with($path, '/') || str_contains($path, "\0")) {
-            return false;
-        }
-
-        return array_all(explode('/', str_replace('\\', '/', $path)), fn ($segment): bool => ! in_array($segment, ['', '.', '..'], true));
+        return self::isSafeRelativePath($path);
     }
 
     private function samePath(string $left, string $right): bool

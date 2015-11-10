@@ -11,6 +11,12 @@ use Capell\Core\Actions\ProjectBuild\VerifyProjectBuildManifestSignatureAction;
 use Capell\Core\Actions\ProjectBuild\VerifyProjectBuildTargetCompatibilityAction;
 use Capell\Core\Actions\Publishing\BuildPublicationLocaleStatusAction;
 use Capell\Core\Actions\PublishOutboundEventAction;
+use Capell\Core\Actions\Reporting\DispatchSignalAction;
+use Capell\Core\Actions\Reporting\GetReportingHealthAction;
+use Capell\Core\Actions\Reporting\GetReportingIncidentAction;
+use Capell\Core\Actions\Reporting\ProcessReportingIncidentsAction;
+use Capell\Core\Actions\Reporting\PruneReportingIncidentsAction;
+use Capell\Core\Actions\Reporting\UpdateReportingIncidentAction;
 use Capell\Core\Contracts\Database\DatabasePlatform;
 use Capell\Core\Contracts\Database\DatabaseProvisioner;
 use Capell\Core\Contracts\Database\DatabaseQueryDialect;
@@ -30,6 +36,7 @@ use Capell\Core\Contracts\ProjectBuild\ProjectBuildArtifactHandler;
 use Capell\Core\Contracts\ProjectBuild\ProjectBuildManifestMigration;
 use Capell\Core\Contracts\ProjectBuild\ProjectBuildPackageInstaller;
 use Capell\Core\Contracts\Publishing\PublicationReadinessContributor;
+use Capell\Core\Contracts\Reporting\Reporter;
 use Capell\Core\Contracts\SiteSpec\SiteSpecApplier;
 use Capell\Core\Data\BlueprintSubjectDescriptorData;
 use Capell\Core\Data\Database\DatabaseIndexDefinition;
@@ -66,6 +73,11 @@ use Capell\Core\Data\Publishing\PublicationLocaleStatusContextData;
 use Capell\Core\Data\Publishing\PublicationLocaleStatusData;
 use Capell\Core\Data\Publishing\PublicationReadinessCheckData;
 use Capell\Core\Data\Publishing\PublicationReadinessContextData;
+use Capell\Core\Data\Reporting\DispatchResultData;
+use Capell\Core\Data\Reporting\RedactedSignalData;
+use Capell\Core\Data\Reporting\ReportingHealthData;
+use Capell\Core\Data\Reporting\ReportingIncidentData;
+use Capell\Core\Data\Reporting\SignalData;
 use Capell\Core\Enums\Database\DatabaseCapability;
 use Capell\Core\Enums\Database\DatabaseDateOperation;
 use Capell\Core\Enums\Database\DatabaseFamily;
@@ -87,6 +99,10 @@ use Capell\Core\Enums\Metrics\MetricSource;
 use Capell\Core\Enums\Metrics\MetricValueType;
 use Capell\Core\Enums\Metrics\MetricVisibility;
 use Capell\Core\Enums\MetricUnitEnum;
+use Capell\Core\Enums\Reporting\DispatchStatus;
+use Capell\Core\Enums\Reporting\FailureCategory;
+use Capell\Core\Enums\Reporting\IncidentStatus;
+use Capell\Core\Enums\Reporting\Severity;
 use Capell\Core\Events\OutboundEventPublished;
 use Capell\Core\Events\PackageInstalled;
 use Capell\Core\Facades\CapellCore;
@@ -100,6 +116,7 @@ use Capell\Core\Support\OutboundEventRegistry;
 use Capell\Core\Support\ProjectBuild\ProjectBuildArtifactHandlerRegistry;
 use Capell\Core\Support\ProjectBuild\ProjectBuildManifestSchema;
 use Capell\Core\Support\Publishing\PublicationReadinessRegistry;
+use Capell\Core\Support\Reporting\LogChannelReporter;
 use Capell\Core\Testing\ExtensionTestHarness;
 use InvalidArgumentException;
 use Lorisleiva\Actions\Concerns\AsFake;
@@ -153,6 +170,24 @@ final class BuildExtensionSurfaceCatalogAction
             $this->entry('core.dto.outbound-event-definition', 'dto', OutboundEventDefinitionData::class, ExtensionSurfaceStability::Experimental, 'Typed outbound event definition.'),
             $this->entry('core.dto.health-check-result', 'dto', HealthCheckResultData::class, ExtensionSurfaceStability::Experimental, 'Safe typed operational health check result.'),
             $this->entry('core.dto.health-report', 'dto', HealthReportData::class, ExtensionSurfaceStability::Experimental, 'Deterministic operational health report.'),
+            $this->entry('core.dto.reporting-signal', 'dto', SignalData::class, ExtensionSurfaceStability::Experimental, 'Immutable raw operational signal input.', 'core.reporting-signal'),
+            $this->entry('core.dto.reporting-redacted-signal', 'dto', RedactedSignalData::class, ExtensionSurfaceStability::Experimental, 'Immutable redacted payload accepted by reporting transports.', 'core.reporting-signal'),
+            $this->entry('core.dto.reporting-result', 'dto', DispatchResultData::class, ExtensionSurfaceStability::Experimental, 'Reporting delivery, suppression and fallback outcome.', 'core.reporting-dispatch'),
+            $this->entry('core.action.reporting-dispatch', 'action', DispatchSignalAction::class, ExtensionSurfaceStability::Experimental, 'Configured signal dispatch with cooldown and safe log fallback.', 'core.reporting-dispatch'),
+            $this->entry('core.action.reporting-incident', 'action', GetReportingIncidentAction::class, ExtensionSurfaceStability::Experimental, 'Private redacted incident state and delivery receipts.', 'core.reporting-operator-routing'),
+            $this->entry('core.action.reporting-transition', 'action', UpdateReportingIncidentAction::class, ExtensionSurfaceStability::Experimental, 'Assigned-operator acknowledgement and resolution.', 'core.reporting-operator-routing'),
+            $this->entry('core.action.reporting-process', 'action', ProcessReportingIncidentsAction::class, ExtensionSurfaceStability::Experimental, 'Bounded retry and backup escalation processing.', 'core.reporting-operator-routing'),
+            $this->entry('core.action.reporting-prune', 'action', PruneReportingIncidentsAction::class, ExtensionSurfaceStability::Experimental, 'Bounded retention of resolved incidents.', 'core.reporting-operator-routing'),
+            $this->entry('core.action.reporting-health', 'action', GetReportingHealthAction::class, ExtensionSurfaceStability::Experimental, 'Aggregate health status without incident payloads.', 'core.reporting-operator-routing'),
+            $this->entry('core.dto.reporting-incident', 'dto', ReportingIncidentData::class, ExtensionSurfaceStability::Experimental, 'Immutable operational incident snapshot.', 'core.reporting-operator-routing'),
+            $this->entry('core.dto.reporting-health', 'dto', ReportingHealthData::class, ExtensionSurfaceStability::Experimental, 'Aggregate non-cacheable health endpoint payload.', 'core.reporting-operator-routing'),
+            $this->entry('core.enum.reporting-incident-status', 'enum', IncidentStatus::class, ExtensionSurfaceStability::Experimental, 'Open, acknowledged, escalated and resolved incident states.', 'core.reporting-operator-routing'),
+            $this->entry('core.contract.reporter', 'contract', Reporter::class, ExtensionSurfaceStability::Experimental, 'Vendor-neutral operational signal delivery boundary.', 'core.reporting-dispatch'),
+            $this->entry('core.support.log-channel-reporter', 'support', LogChannelReporter::class, ExtensionSurfaceStability::Experimental, 'Structured JSON delivery through the configured Laravel log channel.', 'core.reporting-dispatch'),
+            $this->entry('core.config.reporting', 'config', 'capell-reporting', ExtensionSurfaceStability::Experimental, 'Reporting defaults, category and exact signal policies, and opt-in transports.', 'core.reporting-dispatch'),
+            $this->entry('core.enum.failure-category', 'enum', FailureCategory::class, ExtensionSurfaceStability::Stable, 'Stable operational failure category values.', 'core.reporting-signal'),
+            $this->entry('core.enum.reporting-severity', 'enum', Severity::class, ExtensionSurfaceStability::Stable, 'Stable PSR log-level severity values.', 'core.reporting-signal'),
+            $this->entry('core.enum.reporting-status', 'enum', DispatchStatus::class, ExtensionSurfaceStability::Experimental, 'Signal dispatch outcomes.', 'core.reporting-dispatch'),
             $this->entry('core.registry.outbound-event', 'registry', OutboundEventRegistry::class, ExtensionSurfaceStability::Experimental, 'Boot-time outbound event definition registry.'),
             $this->entry('core.action.publish-outbound-event', 'action', PublishOutboundEventAction::class, ExtensionSurfaceStability::Experimental, 'Single typed outbound event publication path.'),
             $this->entry('core.event.outbound-event-published', 'event', OutboundEventPublished::class, ExtensionSurfaceStability::Experimental, 'Announced outbound event with typed payload.'),

@@ -263,6 +263,8 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
 
     public function bootingPackage(): void
     {
+        $this->loadRoutesFrom(__DIR__ . '/../../routes/reporting.php');
+
         $this
             ->registerPublishCommands()
             ->registerAboutInfo('capell-app/core')
@@ -276,7 +278,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
     public function configurePackage(Package $package): void
     {
         $package->name(self::$name)
-            ->hasConfigFile(['backup', 'capell', 'redirects'])
+            ->hasConfigFile(['backup', 'capell', 'capell-reporting', 'redirects'])
             ->hasTranslations();
 
         if (! $this->app->runningInConsole()) {
@@ -571,7 +573,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         $this->app->singleton(SiteAccessPolicyRegistry::class);
         $this->app->scoped(
             DatabasePlatformRegistry::class,
-            fn ($app): DatabasePlatformRegistry => new DatabasePlatformRegistry(
+            fn (Application $app): DatabasePlatformRegistry => new DatabasePlatformRegistry(
                 [
                     $app->make(MySqlDatabasePlatform::class),
                     $app->make(MariaDbDatabasePlatform::class),
@@ -582,7 +584,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
                 $app->make(DatabaseManager::class),
             ),
         );
-        $this->app->singleton(DatabaseBackupDriverRegistry::class, fn ($app): DatabaseBackupDriverRegistry => new DatabaseBackupDriverRegistry([
+        $this->app->scoped(DatabaseBackupDriverRegistry::class, fn (Application $app): DatabaseBackupDriverRegistry => new DatabaseBackupDriverRegistry([
             $app->make(SqliteDatabaseBackupDriver::class),
             $app->make(MySqlDatabaseBackupDriver::class),
             $app->make(PostgresDatabaseBackupDriver::class),

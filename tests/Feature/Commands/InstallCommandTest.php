@@ -27,6 +27,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Spatie\Permission\Traits\HasRoles;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Process\Process as SymfonyProcess;
 
 require_once dirname(__DIR__, 5) . '/tests/Support/InstallFilesystemLock.php';
@@ -51,9 +52,10 @@ afterEach(function (): void {
 });
 
 // Helper to setup the environment and return the fake filesystem
-function setupInstallTest(array $packageNames = ['test']): array
+function setupInstallTest(array $packageNames = ['test'], bool $foundationThemeAvailable = false): array
 {
     Storage::fake();
+    bindInstallCommandHermeticProcessFactory();
     CapellCore::clearPackages();
     bindDeveloperToolingInstallationState(false);
     $fakeFileManager = new FakeMigrationFilesystem;
@@ -67,6 +69,13 @@ function setupInstallTest(array $packageNames = ['test']): array
             path: realpath(__DIR__ . '/../../../../../tests/fixtures/install-package'),
         );
 
+    }
+
+    if ($foundationThemeAvailable) {
+        CapellCore::registerPackage(
+            name: 'capell-app/theme-foundation',
+            path: realpath(__DIR__ . '/../../../../../tests/fixtures/install-package'),
+        );
     }
 
     if (in_array('capell-app/admin', $packageNames, true)) {
@@ -371,6 +380,37 @@ function bindInstallCommandRemoveInstallerProcessFactory(?Closure $beforeMake = 
 }
 
 /** @param array<int, string> $packages */
+/**
+ * Install tests must never reach real Composer or npm. Selecting the Foundation
+ * theme without registering it makes the install run a Composer dry-run
+ * preflight; answer that as successful here, and let any other command fail
+ * loudly through Mockery rather than resolving packages over the network. A
+ * test that needs different process behaviour binds its own fake afterwards.
+ */
+function bindInstallCommandHermeticProcessFactory(): void
+{
+    $process = Mockery::mock(SymfonyProcess::class);
+    $process->shouldReceive('setTimeout')->andReturnSelf();
+    $process->shouldReceive('run')->andReturn(0);
+    $process->shouldReceive('isSuccessful')->andReturn(true);
+    $process->shouldReceive('getErrorOutput')->andReturn('');
+    $process->shouldReceive('getOutput')->andReturn('Dry run ok');
+
+    $factory = Mockery::mock(ProcessFactoryInterface::class);
+    $factory
+        ->shouldReceive('make')
+        ->zeroOrMoreTimes()
+        ->with(
+            Mockery::on(fn (array|string $command): bool => is_array($command)
+                && array_slice($command, 0, 3) === ['composer', 'require', '--dry-run']),
+            Mockery::any(),
+            Mockery::any(),
+        )
+        ->andReturn($process);
+
+    app()->instance(ProcessFactoryInterface::class, $factory);
+}
+
 function bindInstallCommandPreflightProcessFactory(
     bool $successful = true,
     string $output = 'Dry run ok',
@@ -545,6 +585,85 @@ it('renders install failures once and exits cleanly', function (): void {
     expect($fake->callCount)->toBe(1);
 });
 
+it('stops installation before cache clearing and handoff when filament upgrade fails', function (): void {
+    setupInstallTest();
+    createTestUser();
+    $fake = bindFakeRunInstallAction();
+    ClearCachesAction::shouldRun()->never();
+    $upgradeCalls = 0;
+    Artisan::registerCommand(Artisan::command('filament:upgrade', function () use (&$upgradeCalls): int {
+        $upgradeCalls++;
+        $this->error('Filament assets could not be published.');
+
+        return 23;
+    }));
+    $handoffPath = storage_path('framework/testing/failed-filament-handoff.json');
+    $output = new BufferedOutput;
+
+    try {
+        $exitCode = Artisan::call('capell:install', [
+            '--packages' => 'test',
+            '--url' => 'https://example.test',
+            '--user' => 'test@example.com',
+            '--clear-cache' => true,
+            '--theme' => 'foundation',
+            '--no-interaction' => true,
+            '--handoff-json' => $handoffPath,
+        ], $output);
+
+        $renderedOutput = $output->fetch();
+        expect($upgradeCalls)->toBe(1)
+            ->and($exitCode)->toBe(Command::FAILURE)
+            ->and($renderedOutput)->toContain('Capell installation failed.')
+            ->toContain("Artisan command 'filament:upgrade' failed with exit code 23.")
+            ->toContain('Filament assets could not be published.')
+            ->and($fake->callCount)->toBe(1)
+            ->and(file_exists($handoffPath))->toBeFalse();
+    } finally {
+        if (is_file($handoffPath)) {
+            unlink($handoffPath);
+        }
+    }
+});
+
+it('stops installation before finalisation when a required cache command fails', function (): void {
+    setupInstallTest();
+    createTestUser();
+    $fake = bindFakeRunInstallAction();
+    Artisan::all();
+    Artisan::registerCommand(Artisan::command('capell:package-cache', function (): int {
+        $this->error('Package cache could not be rebuilt.');
+
+        return 19;
+    }));
+    $handoffPath = storage_path('framework/testing/failed-cache-handoff.json');
+    $output = new BufferedOutput;
+
+    try {
+        $exitCode = Artisan::call('capell:install', [
+            '--packages' => 'test',
+            '--url' => 'https://example.test',
+            '--user' => 'test@example.com',
+            '--clear-cache' => true,
+            '--theme' => 'foundation',
+            '--no-interaction' => true,
+            '--handoff-json' => $handoffPath,
+        ], $output);
+
+        $renderedOutput = $output->fetch();
+        expect($exitCode)->toBe(Command::FAILURE)
+            ->and($renderedOutput)->toContain('Capell installation failed.')
+            ->toContain('Unable to clear capell:package-cache; Package cache could not be rebuilt.')
+            ->not->toContain('Machine-readable install handoff written.')
+            ->and($fake->callCount)->toBe(1)
+            ->and(file_exists($handoffPath))->toBeFalse();
+    } finally {
+        if (is_file($handoffPath)) {
+            unlink($handoffPath);
+        }
+    }
+});
+
 it('returns FAILURE when the specified user email does not exist', function (): void {
     setupInstallTest();
     $fake = bindFakeRunInstallAction();
@@ -689,7 +808,7 @@ it('does not dispatch CapellInstalled when --spec is omitted', function (): void
 });
 
 it('can remove the installer package at the end of an interactive install', function (): void {
-    setupInstallTest(['test', 'capell-app/installer']);
+    setupInstallTest(['test', 'capell-app/installer'], foundationThemeAvailable: true);
     createTestUser();
     bindInstallCommandRemoveInstallerProcessFactory();
     $fake = bindFakeRunInstallAction();
@@ -711,7 +830,7 @@ it('can remove the installer package at the end of an interactive install', func
 });
 
 it('installs filament for the admin package before completing and removing the installer', function (): void {
-    setupInstallTest(['capell-app/admin', 'capell-app/installer']);
+    setupInstallTest(['capell-app/admin', 'capell-app/installer'], foundationThemeAvailable: true);
     unlink(base_path('app/Providers/Filament/AdminPanelProvider.php'));
     createTestUser();
     registerInstallTestFilamentInstallCommand();
@@ -735,7 +854,7 @@ it('installs filament for the admin package before completing and removing the i
         ->expectsConfirmation('Would you like to star our repo on GitHub?', 'no')
         ->assertExitCode(Command::SUCCESS);
 
-    expect($fake->capturedInput->packages)->toBe(['capell-app/admin'])
+    expect($fake->capturedInput->packages)->toBe(['capell-app/admin', 'capell-app/theme-foundation'])
         ->and(file_exists(base_path('app/Providers/Filament/AdminPanelProvider.php')))->toBeTrue();
 });
 
@@ -792,7 +911,7 @@ it('fails before running the install when selected install-time packages cannot 
 });
 
 it('does not remove the installer package when the install fails', function (): void {
-    setupInstallTest(['test', 'capell-app/installer']);
+    setupInstallTest(['test', 'capell-app/installer'], foundationThemeAvailable: true);
     createTestUser();
     $factory = Mockery::mock(ProcessFactoryInterface::class);
     $factory->shouldNotReceive('make');
@@ -817,7 +936,7 @@ it('does not remove the installer package when the install fails', function (): 
 });
 
 it('can remove the installer package after a successful non-interactive install when requested', function (): void {
-    setupInstallTest(['test', 'capell-app/installer']);
+    setupInstallTest(['test', 'capell-app/installer'], foundationThemeAvailable: true);
     createTestUser();
     bindInstallCommandRemoveInstallerProcessFactory();
     $fake = bindFakeRunInstallAction();
@@ -875,7 +994,7 @@ it('emits a redacted install handoff and writes its machine-readable artifact', 
 });
 
 it('leaves the installer package installed when removal is declined', function (): void {
-    setupInstallTest(['test', 'capell-app/installer']);
+    setupInstallTest(['test', 'capell-app/installer'], foundationThemeAvailable: true);
     createTestUser();
     $factory = Mockery::mock(ProcessFactoryInterface::class);
     $factory->shouldNotReceive('make');
@@ -1269,6 +1388,7 @@ it('selects every registered package when --all-packages is given', function ():
     $fake = bindFakeRunInstallAction();
     bindInstallCommandPreflightProcessFactory(packages: [
         'capell-app/marketplace',
+        'capell-app/theme-foundation',
     ]);
 
     artisanCommand('capell:install', [
@@ -2074,6 +2194,7 @@ it('can orchestrate the fresh demo shortcut for every package without post-insta
         ->withArgs(fn (array $cachesToClear): bool => $cachesToClear === ['all']);
     bindInstallCommandPreflightProcessFactory(packages: [
         'capell-app/marketplace',
+        'capell-app/theme-foundation',
     ]);
 
     artisanCommand('capell:install', [

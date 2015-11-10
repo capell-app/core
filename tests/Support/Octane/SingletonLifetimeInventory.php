@@ -38,7 +38,6 @@ use Capell\Core\EventSourcing\Rollback\RollbackValidatorRegistry;
 use Capell\Core\EventSourcing\Support\EventSourcedRegistry;
 use Capell\Core\Models\Concerns\ExtensibleModel;
 use Capell\Core\Support\Assets\VendorAssetConditionRegistry;
-use Capell\Core\Support\Backup\DatabaseBackupDriverRegistry;
 use Capell\Core\Support\BlueprintSubjectRegistry;
 use Capell\Core\Support\Cache\CapellCacheManager;
 use Capell\Core\Support\CapellCoreManager;
@@ -62,6 +61,7 @@ use Capell\Core\Support\Packages\PackageSurfaceRegistrar;
 use Capell\Core\Support\Presentation\PresentationPresetRegistry;
 use Capell\Core\Support\Publishing\PublicationReadinessRegistry;
 use Capell\Core\Support\Renderables\RenderableRegistry;
+use Capell\Core\Support\Reporting\SignalDispatchGuard;
 use Capell\Core\Support\Runtime\RuntimeRolePackageManifest;
 use Capell\Core\Support\Security\LockdownStore;
 use Capell\Core\Support\Settings\SettingsSchemaRegistry;
@@ -218,7 +218,6 @@ final class SingletonLifetimeInventory
 
             // Core wrappers around boot registries or stateless collaborators.
             EventSourcedRegistry::class => self::boot('Event-sourced model definitions are package boot registrations.'),
-            DatabaseBackupDriverRegistry::class => self::boot('Backup driver definitions are package boot registrations.'),
             MakerRegistry::class => self::boot('Maker definitions are package boot registrations.'),
             PackageSurfaceRegistrar::class => self::boot('The registrar delegates only to boot-lifetime package surface registries.'),
             LocalAppThemeDefinitionRepository::class => self::stateless('The repository retains filesystem collaborators but no operation-derived values.'),
@@ -229,6 +228,7 @@ final class SingletonLifetimeInventory
     public static function mutableStaticState(): array
     {
         return [
+            SignalDispatchGuard::class => 'Weak application and fibre keys isolate in-flight reporting; finally releases completed dispatches without retaining request containers.',
             HasModelRelations::class => 'This trait provides a deliberate boot registry shared by every operation.',
             ExtensibleModel::class => 'Extension fillable and cast declarations are deliberate model boot registries.',
             ManifestLoader::class => 'Registered manifest autoload paths are process boot metadata and prevent duplicate Composer loaders.',
