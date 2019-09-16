@@ -3,17 +3,27 @@
 declare(strict_types=1);
 
 use Capell\Core\Actions\GetEditPageResourceUrlAction;
+use Capell\Core\Contracts\AdminResourceResolver;
 use Capell\Core\Models\Page;
 use Illuminate\Database\Eloquent\Relations\Relation;
+use Illuminate\Routing\RouteCollection;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Route;
 
-it('gracefully handles missing resource', function (): void {
+beforeEach(function (): void {
+    $resolver = Mockery::mock(AdminResourceResolver::class);
+    $resolver->shouldReceive('hasPageResource')->andReturnFalse();
+
+    app()->instance(AdminResourceResolver::class, $resolver);
+});
+
+it('returns null when the resource and admin fallback route are unavailable', function (): void {
     $page = Page::factory()->createOne();
 
-    $url = GetEditPageResourceUrlAction::run($page);
-
-    expect($url)->toBeNull();
+    withoutNamedRoute('filament.admin.resources.pages.edit', function () use ($page): void {
+        expect(Route::has('filament.admin.resources.pages.edit'))->toBeFalse()
+            ->and(GetEditPageResourceUrlAction::run($page))->toBeNull();
+    });
 });
 
 it('resolves page ids through the morph map before using the admin route fallback', function (): void {
@@ -39,3 +49,24 @@ it('fails clearly when resolving a page id without a valid morph type', function
         ->and(fn (): ?string => GetEditPageResourceUrlAction::run(123, 'missing'))
         ->toThrow(InvalidArgumentException::class, 'Invalid page type');
 });
+
+function withoutNamedRoute(string $routeName, Closure $callback): void
+{
+    $router = resolve(Router::class);
+    $originalRoutes = $router->getRoutes();
+    $routes = new RouteCollection;
+
+    foreach ($originalRoutes->getRoutes() as $route) {
+        if ($route->getName() !== $routeName) {
+            $routes->add($route);
+        }
+    }
+
+    $router->setRoutes($routes);
+
+    try {
+        $callback();
+    } finally {
+        $router->setRoutes($originalRoutes);
+    }
+}
