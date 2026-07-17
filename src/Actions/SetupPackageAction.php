@@ -9,6 +9,7 @@ use Capell\Core\Data\PackageData;
 use Capell\Core\Support\Packages\PackageLifecycleRunner;
 use Capell\Core\Support\Process\ArtisanProcessEnvironment;
 use Exception;
+use Lorisleiva\Actions\Concerns\AsFake;
 use Lorisleiva\Actions\Concerns\AsObject;
 use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
@@ -18,6 +19,7 @@ use Symfony\Component\Process\Process;
  */
 class SetupPackageAction
 {
+    use AsFake;
     use AsObject;
 
     /**
@@ -59,7 +61,7 @@ class SetupPackageAction
         ?ProgressReporter $reporter,
     ): void {
         $phpBinary = self::resolvePhpCliBinary();
-        $command = [$phpBinary, 'artisan', $setupCommand, '--no-interaction'];
+        $command = [$phpBinary, '-d', 'memory_limit=512M', 'artisan', $setupCommand, '--no-interaction'];
 
         foreach ($arguments as $option => $value) {
             if ($value === null) {

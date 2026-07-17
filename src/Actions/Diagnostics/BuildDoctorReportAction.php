@@ -27,6 +27,7 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Lorisleiva\Actions\Concerns\AsFake;
 use Lorisleiva\Actions\Concerns\AsObject;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Throwable;
@@ -36,6 +37,7 @@ use Throwable;
  */
 final class BuildDoctorReportAction
 {
+    use AsFake;
     use AsObject;
 
     public function __construct(
@@ -186,8 +188,10 @@ final class BuildDoctorReportAction
     {
         $missingTables = $this->runtimeSchema->missingTables();
         $installationState = ResolveCapellInstallationStateAction::run();
+        $installationIsComplete = $installationState === CapellInstallationState::Installed
+            || ($installSummary && $missingTables === []);
 
-        if ($missingTables !== [] || (! $installSummary && $installationState !== CapellInstallationState::Installed)) {
+        if (! $installationIsComplete) {
             return new DoctorCheckResultData(
                 label: 'Required tables exist',
                 passed: false,

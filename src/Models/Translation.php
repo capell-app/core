@@ -175,14 +175,14 @@ class Translation extends Model implements HasMedia, HasMediaContract, Userstamp
         $this->addMediaCollection(MediaCollectionEnum::BackgroundImage->value)->singleFile();
     }
 
-    /** @return MorphOne<Media, self> */
+    /** @return MorphOne<Media, $this> */
     public function image(): MorphOne
     {
         return $this->morphOne(Media::class, 'model')
             ->where('collection_name', MediaCollectionEnum::Image->value);
     }
 
-    /** @return MorphOne<Media, self> */
+    /** @return MorphOne<Media, $this> */
     public function backgroundImage(): MorphOne
     {
         return $this->morphOne(Media::class, 'model')
@@ -193,8 +193,10 @@ class Translation extends Model implements HasMedia, HasMediaContract, Userstamp
     {
         $label = $this->meta['label'] ?? null;
 
-        if ($label === null || $label === '') {
-            return $this->attributes['title'];
+        if (! is_string($label) || $label === '') {
+            $title = $this->attributes['title'] ?? null;
+
+            return is_string($title) ? $title : null;
         }
 
         return $label;
