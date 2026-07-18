@@ -17,6 +17,7 @@ use Capell\Core\Models\Layout;
 use Capell\Core\Models\Page;
 use Capell\Core\Models\PageUrl;
 use Capell\Core\Models\Site;
+use Capell\Core\Support\Slug\SlugGenerator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
@@ -31,7 +32,7 @@ class PageCreator implements PageCreatable
      *
      * @var array<int, string>
      */
-    protected const ERROR_PAGE_STATUSES = ['401', '402', '403', '404', '419', '429', '500', '503'];
+    protected const array ERROR_PAGE_STATUSES = ['401', '402', '403', '404', '419', '429', '500', '503'];
 
     protected LayoutCreator $layoutCreator;
 
@@ -295,7 +296,7 @@ class PageCreator implements PageCreatable
             }
 
             if (! isset($meta['slug'])) {
-                $meta['slug'] = $translation_data['slug'] ?? str($data['name'])->slug()->toString();
+                $meta['slug'] = $translation_data['slug'] ?? SlugGenerator::slug($data['name']);
             }
 
             $attributes = [

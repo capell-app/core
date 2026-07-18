@@ -4,12 +4,12 @@ declare(strict_types=1);
 
 use Capell\Core\Actions\Install\ClearCachesAction;
 use Capell\Core\Actions\Install\RunInstallAction;
-use Capell\Core\Console\Commands\InstallCommand;
 use Capell\Core\Enums\PackageScopeEnum;
 use Capell\Core\Enums\PackageTypeEnum;
 use Capell\Core\Events\CapellInstalled;
 use Capell\Core\Facades\CapellCore;
 use Capell\Core\Models\Site;
+use Capell\Core\Support\Install\Cli\InstallCacheOptionCatalog;
 use Capell\Core\Support\Install\DeveloperToolingInstallationState;
 use Capell\Core\Support\Migration\MigrationFilesystemInterface;
 use Capell\Core\Support\Process\ProcessFactoryInterface;
@@ -820,6 +820,44 @@ it('can remove the installer package after a successful non-interactive install 
 
     expect($exitCode)->toBe(Command::SUCCESS)
         ->and($fake->callCount)->toBe(1);
+});
+
+it('emits a redacted install handoff and writes its machine-readable artifact', function (): void {
+    setupInstallTest(['test']);
+    createTestUser();
+    bindFakeRunInstallAction();
+    $relativePath = 'storage/framework/testing/capell-install-handoff.json';
+    $absolutePath = base_path($relativePath);
+
+    if (is_file($absolutePath)) {
+        unlink($absolutePath);
+    }
+
+    try {
+        artisanCommand('capell:install', [
+            '--packages' => 'test',
+            '--url' => 'https://operator:secret@example.test/?token=private#fragment',
+            '--user' => 'test@example.com',
+            '--clear-cache' => true,
+            '--theme' => 'foundation',
+            '--handoff-json' => $relativePath,
+            '--no-interaction' => true,
+        ])
+            ->expectsOutputToContain('Capell Install Handoff')
+            ->expectsOutputToContain('Machine-readable install handoff written.')
+            ->assertExitCode(Command::SUCCESS);
+        $handoff = json_decode((string) file_get_contents($absolutePath), true, flags: JSON_THROW_ON_ERROR);
+
+        expect($handoff['schemaVersion'])->toBe(1)
+            ->and($handoff['status'])->toBe('completed')
+            ->and($handoff['urls']['public'])->toBe('https://example.test/')
+            ->and($handoff['publicImpact']['accountConnection'])->toBe('not_required')
+            ->and($handoff['publicImpact']['telemetrySubmission'])->toBe('not_performed');
+    } finally {
+        if (is_file($absolutePath)) {
+            unlink($absolutePath);
+        }
+    }
 });
 
 it('leaves the installer package installed when removal is declined', function (): void {
@@ -2161,10 +2199,7 @@ it('defaults interactive developer tooling to disabled', function (): void {
 });
 
 it('defaults interactive cache clearing to every specific cache option', function (): void {
-    $reflection = new ReflectionClass(InstallCommand::class);
-    $method = $reflection->getMethod('defaultCacheKeys');
-
-    expect($method->invoke(new InstallCommand))->toBe([
+    expect(InstallCacheOptionCatalog::defaultKeys())->toBe([
         'page',
         'config',
         'views',

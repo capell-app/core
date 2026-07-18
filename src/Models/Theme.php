@@ -18,9 +18,11 @@ use Capell\Core\Models\Contracts\Defaultable;
 use Capell\Core\Models\Contracts\Statusable;
 use Capell\Core\Models\Contracts\Userstampable;
 use Capell\Core\Observers\ThemeObserver;
+use Capell\Core\Support\Json\JsonCodec;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -194,12 +196,12 @@ class Theme extends Model implements Blueprintable, Defaultable, HasMedia, HasMe
     {
         $admin = is_array($this->admin) ? $this->admin : [];
 
-        return hash('sha256', json_encode([
+        return hash('sha256', JsonCodec::encode([
             'name' => $this->name,
             'key' => $this->key,
             'colors' => $this->colors,
             'icon' => $admin['icon'] ?? null,
-        ], JSON_THROW_ON_ERROR));
+        ]));
     }
 
     public function readyGeneratedImage(): ?string
@@ -237,49 +239,49 @@ class Theme extends Model implements Blueprintable, Defaultable, HasMedia, HasMe
             ->orderBy($this->qualifyColumn('name'));
     }
 
-    protected function getDarkModeToggleAttribute(): ?bool
+    protected function darkModeToggle(): Attribute
     {
-        return match ($this->getMeta('dark_mode_toggle', false)) {
+        return Attribute::make(get: fn (): ?bool => match ($this->getMeta('dark_mode_toggle', false)) {
             'on' => true,
             'off' => false,
             default => null,
-        };
+        });
     }
 
-    protected function getStickyHeaderAttribute(): bool
+    protected function stickyHeader(): Attribute
     {
-        return $this->getMeta('header_position') === 'sticky';
+        return Attribute::make(get: fn (): bool => $this->getMeta('header_position') === 'sticky');
     }
 
-    protected function getFixedHeaderAttribute(): bool
+    protected function fixedHeader(): Attribute
     {
-        return $this->getMeta('header_position') === 'fixed';
+        return Attribute::make(get: fn (): bool => $this->getMeta('header_position') === 'fixed');
     }
 
-    protected function getScrollUpHeaderAttribute(): bool
+    protected function scrollUpHeader(): Attribute
     {
-        return $this->getMeta('header_position') === 'scroll_up';
+        return Attribute::make(get: fn (): bool => $this->getMeta('header_position') === 'scroll_up');
     }
 
     /**
      * @return list<string>
      */
-    protected function getSecondaryContainersAttribute(): array
+    protected function secondaryContainers(): Attribute
     {
-        return $this->getMeta('secondary_containers') ?? ['sidebar'];
+        return Attribute::make(get: fn (): array => $this->getMeta('secondary_containers') ?? ['sidebar']);
     }
 
     /**
      * @return array<string, mixed>
      */
-    protected function getColorsAttribute(): array
+    protected function colors(): Attribute
     {
-        return (array) ($this->getMeta('colors') ?? []);
+        return Attribute::make(get: fn (): array => (array) ($this->getMeta('colors') ?? []));
     }
 
-    protected function getWithDarkModeAttribute(): bool
+    protected function withDarkMode(): Attribute
     {
-        return $this->dark_mode_toggle !== false;
+        return Attribute::make(get: fn (): bool => $this->dark_mode_toggle !== false);
     }
 
     /**
@@ -312,13 +314,10 @@ class Theme extends Model implements Blueprintable, Defaultable, HasMedia, HasMe
         }
 
         if (is_string($meta) && $meta !== '') {
-            $decodedMeta = json_decode($meta, true);
+            $decodedMeta = JsonCodec::decodeArray($meta);
+            $rawColors = $decodedMeta['colors'] ?? [];
 
-            if (is_array($decodedMeta)) {
-                $rawColors = $decodedMeta['colors'] ?? [];
-
-                return is_array($rawColors) ? $rawColors : [];
-            }
+            return is_array($rawColors) ? $rawColors : [];
         }
 
         return [];
