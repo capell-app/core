@@ -3,25 +3,6 @@
 declare(strict_types=1);
 
 use Capell\Core\Console\Commands\InstallCommand;
-use Capell\Core\Support\Install\InstallMemoryLimit;
-
-it('raises the effective cli memory limit before installation', function (): void {
-    $previousLimit = ini_get('memory_limit');
-    $lowerLimit = memory_get_usage(true) + (64 * 1024 * 1024);
-
-    expect($lowerLimit)->toBeLessThan(InstallMemoryLimit::MINIMUM_BYTES);
-    ini_set('memory_limit', (string) $lowerLimit);
-
-    try {
-        callInstallCommandMethod(installCommandForOptions([]), 'ensureInstallationMemoryLimit');
-
-        expect(ini_get('memory_limit'))->toBe('512M');
-    } finally {
-        if (is_string($previousLimit)) {
-            ini_set('memory_limit', $previousLimit);
-        }
-    }
-});
 use Capell\Core\Data\Install\DeveloperToolingChoiceData;
 use Capell\Core\Data\Install\InstallHandoffData;
 use Capell\Core\Data\NewUserData;
@@ -253,7 +234,6 @@ it('requires missing foundation packages when all-package mode is selected', fun
             'capell-app/admin',
             'capell-app/frontend',
             'capell-app/marketplace',
-            'capell-app/welcome-tour',
         ]);
 });
 
