@@ -19,7 +19,9 @@ final class CanonicalizeProjectBuildManifestSigningInputAction
     public function handle(array|ProjectBuildManifestData $manifest): string
     {
         $payload = $manifest instanceof ProjectBuildManifestData ? $manifest->toArray() : $manifest;
-        throw_unless(is_array($payload['signature'] ?? null), InvalidArgumentException::class, 'Project build manifest signing metadata must be an object.');
+        if (! is_array($payload['signature'] ?? null)) {
+            throw new InvalidArgumentException('Project build manifest signing metadata must be an object.');
+        }
 
         unset($payload['signature']['value']);
 

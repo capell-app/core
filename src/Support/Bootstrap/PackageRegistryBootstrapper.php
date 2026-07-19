@@ -67,14 +67,17 @@ final readonly class PackageRegistryBootstrapper
                 $this->normalizeCachedManifest(...),
                 $cached,
             );
-        } catch (Throwable $throwable) {
+        } catch (Throwable $exception) {
             @unlink($cachePath);
 
             if ($this->app->runningInConsole()) {
                 return $this->manifestLoader->discover();
             }
 
-            throw new RuntimeException('The Capell package manifest cache is invalid. Run [php artisan capell:package-cache] during deployment.', $throwable->getCode(), previous: $throwable);
+            throw new RuntimeException(
+                'The Capell package manifest cache is invalid. Run [php artisan capell:package-cache] during deployment.',
+                previous: $exception,
+            );
         }
     }
 

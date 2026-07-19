@@ -34,7 +34,6 @@ final class ProjectBuildManifestMigrationRegistry
         if (! is_int($version)) {
             throw ValidationException::withMessages(['schemaVersion' => 'The project build manifest schema version must be an integer.']);
         }
-
         if ($version > $targetVersion) {
             throw ValidationException::withMessages(['schemaVersion' => 'The project build manifest uses a newer unsupported schema version.']);
         }

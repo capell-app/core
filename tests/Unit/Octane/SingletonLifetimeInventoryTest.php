@@ -5,7 +5,6 @@ declare(strict_types=1);
 use Capell\Core\Concerns\HasModelRelations;
 use Capell\Core\Octane\Resettable;
 use Capell\Core\Support\CapellCoreManager;
-use Capell\Core\Support\PackageRegistry\CapellPackageRegistry;
 use Capell\Core\ThemeStudio\Contracts\ThemeRuntimeSettings;
 use Capell\Core\ThemeStudio\Settings\ThemeStudioSettings;
 use Capell\Frontend\Contracts\AssetsRegistryInterface;
@@ -31,11 +30,6 @@ trait SingletonLifetimeTraitFixture
 class SingletonLifetimeGrandparentFixture
 {
     private array $privateParentCache = [];
-
-    public function privateParentCache(): array
-    {
-        return $this->privateParentCache;
-    }
 }
 
 class SingletonLifetimeParentFixture extends SingletonLifetimeGrandparentFixture
@@ -46,11 +40,6 @@ class SingletonLifetimeParentFixture extends SingletonLifetimeGrandparentFixture
 final class SingletonLifetimeMutableDependencyFixture
 {
     private array $values = [];
-
-    public function values(): array
-    {
-        return $this->values;
-    }
 }
 
 final class SingletonLifetimeFixture extends SingletonLifetimeParentFixture
@@ -90,23 +79,23 @@ it('enforces request mutable singleton reset protection without scoped dual regi
         ->toBe([], 'A service cannot be both scoped and tagged for reset');
 
     foreach (SingletonLifetimeInventory::mutableSingletons() as $class => $classification) {
-        expect(class_exists($class))->toBeTrue(sprintf('Classified singleton [%s] must exist', $class))
+        expect(class_exists($class))->toBeTrue("Classified singleton [{$class}] must exist")
             ->and($classification['reason'])->not->toBeEmpty();
 
         if ($classification['lifetime'] !== SingletonLifetime::RequestMutable) {
             continue;
         }
 
-        expect($scopedTargets)->not->toHaveKey($class, sprintf('Request-mutable singleton [%s] must not also be scoped', $class));
+        expect($scopedTargets)->not->toHaveKey($class, "Request-mutable singleton [{$class}] must not also be scoped");
 
         if ($classification['protection'] === 'tagged') {
-            expect(is_a($class, Resettable::class, true))->toBeTrue(sprintf('Tagged singleton [%s] must implement Resettable', $class))
-                ->and($taggedTargets)->toHaveKey($class, sprintf('Resettable singleton [%s] must be tagged in its provider', $class));
+            expect(is_a($class, Resettable::class, true))->toBeTrue("Tagged singleton [{$class}] must implement Resettable")
+                ->and($taggedTargets)->toHaveKey($class, "Resettable singleton [{$class}] must be tagged in its provider");
         }
 
         if ($classification['protection'] === 'delegated') {
             expect(is_a(CapellCoreManager::class, Resettable::class, true))
-                ->toBeTrue(sprintf('Delegated singleton [%s] requires the tagged core manager flush', $class));
+                ->toBeTrue("Delegated singleton [{$class}] requires the tagged core manager flush");
         }
     }
 });
@@ -137,13 +126,13 @@ it('characterizes singletonIf in the abstract package provider outside provider 
     $source = (string) file_get_contents(dirname(__DIR__, 4) . '/core/src/Support/Packages/AbstractPackageServiceProvider.php');
 
     expect(singletonLifetimeGuard()->bindingTargetsInSource($source))
-        ->toContain(CapellPackageRegistry::class);
+        ->toContain('Capell\Core\Support\PackageRegistry\CapellPackageRegistry');
 });
 
 it('keeps known process static hazards explicit and request-safe', function (): void {
     foreach ([PhoneHomeAction::class, InstallerPreflight::class, ErrorPageFallbackManifestStore::class, FrontendLogger::class] as $class) {
-        expect(collect(new ReflectionClass($class)->getProperties(ReflectionProperty::IS_STATIC))->all())
-            ->toBe([], sprintf('Known operation service [%s] must not retain static state', $class));
+        expect(collect((new ReflectionClass($class))->getProperties(ReflectionProperty::IS_STATIC))->all())
+            ->toBe([], "Known operation service [{$class}] must not retain static state");
     }
 
     $hazards = singletonLifetimeGuard()->mutatedStaticState();
