@@ -9,6 +9,27 @@ return [
 
     'cache_path' => env('CAPELL_CACHE_PATH', base_path('bootstrap/cache/capell')),
     'cache_ttl' => (int) env('CAPELL_CACHE_TTL', 60),
+    'cache_lock_seconds' => (int) env('CAPELL_CACHE_LOCK_SECONDS', 30),
+    'cache_lock_wait_seconds' => (int) env('CAPELL_CACHE_LOCK_WAIT_SECONDS', 10),
+    'multi_node' => (bool) env('CAPELL_MULTI_NODE', false),
+
+    /*
+     * Release-root writes are only supported for a directly addressed, writable
+     * checkout or build root. Use "immutable" for container/serverless releases
+     * and "atomic" when a current symlink points at versioned releases. Both
+     * production modes block runtime writes to composer.json, vendor/, database/,
+     * and public/; perform those changes while building the next release instead.
+     */
+    'release_root_mode' => env('CAPELL_RELEASE_ROOT_MODE', 'mutable'),
+
+    /*
+     * Whether this installation installs extensions and builds frontend assets on
+     * the server itself. Leave this false when Composer runs and assets are built
+     * during deployment, which is the usual production shape: the server then needs
+     * no Composer or Node toolchain, and Capell Doctor reports their absence as
+     * information rather than a failure.
+     */
+    'server_side_tooling' => (bool) env('CAPELL_SERVER_SIDE_TOOLING', false),
 
     'assets' => [
         'disk' => env('CAPELL_ASSETS_DISK', 'local'),

@@ -25,6 +25,7 @@ use Capell\Core\Octane\Resettable;
 use Capell\Core\Providers\CapellServiceProvider;
 use Capell\Core\Settings\CoreSettings;
 use Capell\Core\Support\Cache\CapellCacheManager;
+use Capell\Core\Support\Metrics\MetricCollectorRegistry;
 use Capell\Core\Support\PackageRegistry\CapellPackageRegistry;
 use Composer\InstalledVersions;
 use RuntimeException;
@@ -50,7 +51,7 @@ class CapellCoreManager implements Resettable
 
     public function flushOctaneState(): void
     {
-        resolve(CapellCacheManager::class)->flushLocalCache();
+        resolve(CapellCacheManager::class)->flushRuntimeState();
         resolve(CapellPackageRegistry::class)->flushRuntimeState();
 
         $this->defaultPages = null;
@@ -72,5 +73,13 @@ class CapellCoreManager implements Resettable
         throw_if(! is_string($settingsClass) || $settingsClass === '', RuntimeException::class, 'Core settings class is not configured.');
 
         return resolve($settingsClass);
+    }
+
+    /** @param class-string $collectorClass */
+    public function registerMetricCollector(string $collectorClass): static
+    {
+        resolve(MetricCollectorRegistry::class)->register($collectorClass);
+
+        return $this;
     }
 }

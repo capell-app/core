@@ -195,6 +195,18 @@ trait ManagesPackages
         return $this;
     }
 
+    public function refreshInstalledManifestPackage(CapellManifestData $manifest, ?string $version = null): static
+    {
+        $this->registerManifestPackage($manifest, $version);
+
+        if ($manifest->installPath !== null) {
+            $this->packages[$manifest->name]->path = $manifest->installPath;
+            $this->clearPackageMemoization();
+        }
+
+        return $this;
+    }
+
     /**
      * @return Collection<string, PackageData>
      */
@@ -250,12 +262,12 @@ trait ManagesPackages
             return false;
         }
 
-        if ($this->extensionLifecycle()->status($name, collect($this->packages)) === ExtensionStatusEnum::Uninstalled) {
-            return false;
-        }
-
         if ($package->isCore()) {
             return $this->corePackageIsAvailable($package);
+        }
+
+        if ($this->extensionLifecycle()->status($name, collect($this->packages)) === ExtensionStatusEnum::Uninstalled) {
+            return false;
         }
 
         if (array_key_exists($name, $this->forcedPackageInstallStates)) {
@@ -490,8 +502,8 @@ trait ManagesPackages
                 ->values()
                 ->all();
 
-            $this->setUninstalledExtensionNames($names);
             $this->clearExtensionCache();
+            $this->setUninstalledExtensionNames($names);
 
             return;
         }

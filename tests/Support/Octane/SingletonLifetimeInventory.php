@@ -7,6 +7,7 @@ namespace Capell\Tests\Support\Octane;
 use Capell\Admin\Support\Activity\ActivityResourceLinkRegistry;
 use Capell\Admin\Support\AdminEventRegistry;
 use Capell\Admin\Support\AdminEventRouter;
+use Capell\Admin\Support\AdminRuntimeActivator;
 use Capell\Admin\Support\AdminSurfaceContributionCache;
 use Capell\Admin\Support\AdminSurfaceContributionRegistry;
 use Capell\Admin\Support\Bridges\AdminBridgeRegistrar;
@@ -42,6 +43,9 @@ use Capell\Core\Support\Install\InstallPatchRegistry;
 use Capell\Core\Support\Links\LinkableContentRegistry;
 use Capell\Core\Support\Makers\MakerRegistry;
 use Capell\Core\Support\Manifest\ManifestLoader;
+use Capell\Core\Support\Metrics\MetricCollectorRegistry;
+use Capell\Core\Support\Metrics\MetricEventRegistry;
+use Capell\Core\Support\Metrics\MetricsManager;
 use Capell\Core\Support\Models\ModelInterceptorRegistry;
 use Capell\Core\Support\PackageRegistry\CapellPackageRegistry;
 use Capell\Core\Support\Packages\PackageSurfaceRegistrar;
@@ -59,7 +63,6 @@ use Capell\Core\ThemeStudio\Preview\ThemePreviewContext;
 use Capell\Core\ThemeStudio\Theme\PagePresentationRegistry;
 use Capell\Core\ThemeStudio\Theme\ThemeRegistry;
 use Capell\Core\ThemeStudio\Theme\WidgetPresentationRegistry;
-use Capell\Frontend\Actions\RenderHtmlContentAction;
 use Capell\Frontend\Contracts\FrontendContextReader;
 use Capell\Frontend\Support\Assets\DefaultFrontendResourcePlanRenderer;
 use Capell\Frontend\Support\Assets\FrontendAssetsService;
@@ -96,6 +99,7 @@ final class SingletonLifetimeInventory
     public static function dynamicBindingTargets(): array
     {
         return [
+            CapellCoreManager::class => CapellCoreManager::class,
             ThemePreviewContext::class => ThemePreviewContext::class,
             FrontendContextReader::class => FrontendState::class,
         ];
@@ -130,6 +134,9 @@ final class SingletonLifetimeInventory
             RollbackValidatorRegistry::class => self::boot('Rollback validators are package boot registrations.'),
             SettingsSchemaRegistry::class => self::boot('Settings schemas and metadata are package boot registrations.'),
             SiteAccessPolicyRegistry::class => self::boot('Site access policy providers are package boot registrations.'),
+            MetricEventRegistry::class => self::boot('Metric event definitions are package boot registrations.'),
+            MetricCollectorRegistry::class => self::boot('Metric collectors are package boot registrations.'),
+            MetricsManager::class => self::stateless('The manager delegates to the boot metric registry and event storage action.'),
 
             // Admin boot registration state.
             ExtensionPageRegistry::class => self::boot('Extension pages are package boot registrations.'),
@@ -143,6 +150,7 @@ final class SingletonLifetimeInventory
             UserMenuItemRegistry::class => self::boot('User menu definitions are package boot registrations; resolution is scoped.'),
             OverviewStatRegistry::class => self::boot('Overview stats are package boot registrations.'),
             AdminBridgeRegistry::class => self::boot('Admin bridge contributions are package boot registrations.'),
+            AdminRuntimeActivator::class => self::boot('Admin activation transitions once per worker and materializes only boot-lifetime registrations.'),
             ImportEntryRegistry::class => self::boot('Import entries are package boot registrations.'),
             ExtensionManagementSurfaceRegistry::class => self::boot('Extension management surfaces are package boot registrations.'),
             ExtensionsPageActionRegistry::class => self::boot('Extension page actions are package boot registrations.'),
@@ -193,7 +201,6 @@ final class SingletonLifetimeInventory
             ExtensibleModel::class => 'Extension fillable and cast declarations are deliberate model boot registries.',
             ManifestLoader::class => 'Registered manifest autoload paths are process boot metadata and prevent duplicate Composer loaders.',
             SanitizeSiteSpecSectionHtmlAction::class => 'The sanitizer is an immutable process-wide parser cache.',
-            RenderHtmlContentAction::class => 'The sanitizer is an immutable process-wide parser cache.',
             DemoPackageAction::class => 'The static process factory is a test-only override with an explicit reset API; production operations never populate it.',
             InstallDeveloperToolingAction::class => 'Static collaborators and paths are test-only overrides with explicit reset APIs; production operations never populate them.',
             RequirePackageAction::class => 'The static process factory is a test-only override with an explicit reset API; production operations never populate it.',

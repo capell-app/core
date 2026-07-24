@@ -8,12 +8,16 @@ use Capell\Admin\Data\AdminSurfaceContributionData;
 use Capell\Admin\Enums\PermissionSyncMode;
 use Capell\Admin\Facades\CapellAdmin;
 use Capell\Core\Actions\DemoPackageAction;
+use Capell\Core\Actions\InstallPackageAction;
 use Capell\Core\Contracts\AdminPermissionSynchronizer;
 use Capell\Core\Contracts\ProgressReporter;
 use Capell\Core\Data\InstallInputData;
+use Capell\Core\Data\PackageData;
 use Capell\Core\Enums\ExtensionStatusEnum;
+use Capell\Core\Events\CapellInstallationCompleted;
 use Capell\Core\Facades\CapellCore;
 use Capell\Core\Models\CapellExtension;
+use Capell\Core\Support\Install\InstalledPackageManifestDiscovery;
 use Capell\Core\Support\Install\InstallPlan;
 use Capell\Core\Support\Install\InstallRunState;
 use Capell\Core\Support\Install\InstallStepExecutor;
@@ -33,6 +37,7 @@ use Illuminate\Contracts\Process\ProcessResult;
 use Illuminate\Foundation\Bus\PendingDispatch;
 use Illuminate\Process\Factory;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Facade;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
@@ -805,6 +810,8 @@ it('integrates the admin panel with resolved schema and feature flags', function
 });
 
 it('reports completion and rejects unknown install steps clearly', function (): void {
+    Event::fake([CapellInstallationCompleted::class]);
+
     $lines = [];
     $state = new InstallRunState(
         installStepExecutorInputData(),
@@ -819,6 +826,8 @@ it('reports completion and rejects unknown install steps clearly', function (): 
     expect($lines)->toContain(['type' => 'info', 'line' => '✓ Installation complete!'])
         ->and(CapellExtension::query()->where('composer_name', 'capell-app/core')->value('status'))
         ->toBe(ExtensionStatusEnum::Enabled);
+
+    Event::assertDispatched(CapellInstallationCompleted::class);
 
     expect(fn (): InstallRunState => resolve(InstallStepExecutor::class)->execute('unknown-step', $state))
         ->toThrow(RuntimeException::class, 'Unknown install step: unknown-step');
@@ -875,4 +884,74 @@ it('publishes migrations for trusted core packages during install', function ():
         File::deleteDirectory($corePackagePath);
         File::deleteDirectory($installCommandPackagePath);
     }
+});
+
+it('refreshes selected package metadata before package install without a developer tooling step', function (): void {
+    $packageName = 'capell-app/agent-bridge';
+    $installedPath = base_path('vendor/capell-app/agent-bridge');
+
+    CapellCore::registerPackage($packageName, path: base_path('.composer-install-pending/agent-bridge'));
+
+    $lines = [];
+    $user = User::factory()->createOne();
+    $state = new InstallRunState(
+        new InstallInputData(
+            siteUrl: 'https://example.com',
+            packages: [$packageName],
+            languages: ['en'],
+            demoContent: false,
+            cachesToClear: [],
+            generateSitemap: false,
+            generateStaticSite: false,
+            seedDefaultData: false,
+        ),
+        installStepExecutorReporter($lines),
+        (int) $user->getKey(),
+    );
+
+    $preInstallPackage = $state->selectedPackages()->get($packageName);
+
+    expect(array_column(InstallPlan::build($state->inputData), 'key'))
+        ->not->toContain(InstallPlan::STEP_INSTALL_DEVELOPER_TOOLING);
+
+    $installedManifest = CapellManifestData::fromArray(
+        capellManifestV3Array(
+            name: $packageName,
+            overrides: [
+                'database' => [
+                    'migrations' => true,
+                    'settings' => false,
+                    'requiredTables' => [],
+                ],
+            ],
+        ),
+        installPath: $installedPath,
+    );
+    $manifestDiscovery = Mockery::mock(InstalledPackageManifestDiscovery::class);
+    $manifestDiscovery->shouldReceive('discover')
+        ->once()
+        ->andReturn([$packageName => $installedManifest]);
+    app()->instance(InstalledPackageManifestDiscovery::class, $manifestDiscovery);
+
+    $installPackage = Mockery::mock(InstallPackageAction::class);
+    $installPackage->shouldReceive('handle')
+        ->once()
+        ->withArgs(fn (PackageData $package): bool => $package->path === $installedPath
+            && $package->declaresSchemaMigrations());
+    app()->instance(InstallPackageAction::class, $installPackage);
+
+    resolve(InstallStepExecutor::class)->execute(
+        InstallPlan::packageInstallStepKey($packageName),
+        $state,
+    );
+
+    $installedPackage = $state->selectedPackages()->get($packageName);
+    if (! $installedPackage instanceof PackageData) {
+        throw new UnexpectedValueException(sprintf('Installed package metadata was not refreshed for %s.', $packageName));
+    }
+
+    expect($preInstallPackage)->toBeInstanceOf(PackageData::class)
+        ->and($installedPackage)->not->toBe($preInstallPackage)
+        ->and($installedPackage->path)->toBe($installedPath)
+        ->and($installedPackage->declaresSchemaMigrations())->toBeTrue();
 });
