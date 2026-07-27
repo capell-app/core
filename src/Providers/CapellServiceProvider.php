@@ -228,6 +228,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
             ->registerPublishCommands()
             ->registerAboutInfo('capell-app/core')
             ->registerMorphMap()
+            ->registerPageVariationMorphAliases()
             ->registerGatePolicyGuesser()
             ->registerTranslationEvents()
             ->bootEventSourcing();
@@ -531,6 +532,24 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         return $this;
     }
 
+    /**
+     * Re-assert morph aliases for page variations once every provider has booted.
+     *
+     * morphMap() merges, so a package booting later silently takes over a key
+     * another package derived the same name for — access-gate and events both
+     * derive `event` from class_basename. The loser is left with no alias at
+     * all, and getMorphClass() on it throws ClassMorphViolationException, which
+     * took out /admin/page-urls entirely.
+     */
+    private function registerPageVariationMorphAliases(): self
+    {
+        $this->app->booted(static function (): void {
+            CapellCore::ensurePageVariationMorphAliases();
+        });
+
+        return $this;
+    }
+
     private function registerModels(): self
     {
         CapellCore::registerModels([
@@ -755,9 +774,14 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
 
     private function registerOptimization(): self
     {
+        // Deliberately registered without a `clear:` command. Every other
+        // Laravel cache degrades to "slower" when optimize:clear runs, but this
+        // one gates HTTP boot, so clearing it takes the site down until someone
+        // rebuilds it by hand — and install/upgrade both call optimize:clear.
+        // `optimize` still overwrites it; removing it stays possible, but only
+        // via the explicit capell:package-cache:clear command.
         $this->optimizes(
             optimize: PackageCacheCommand::class,
-            clear: PackageClearCacheCommand::class,
             key: 'capell-package-manifests',
         );
 
