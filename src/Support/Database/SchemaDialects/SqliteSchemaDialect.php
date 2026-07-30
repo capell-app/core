@@ -21,7 +21,6 @@ final class SqliteSchemaDialect extends AbstractSchemaDialect implements Databas
             DatabaseCapability::PrefixIndex,
             DatabaseCapability::StoredGeneratedColumn,
             DatabaseCapability::HashGeneratedColumn,
-            DatabaseCapability::FullTextIndex,
             DatabaseCapability::ForeignKeyDrop => false,
         };
     }
@@ -69,18 +68,40 @@ final class SqliteSchemaDialect extends AbstractSchemaDialect implements Databas
         ));
     }
 
-    public function fullTextIndex(DatabaseIndexDefinition $index): ?SqlFragment
+    public function inspectGeneratedColumn(string $table, string $column, ?Connection $connection = null): SqlFragment
     {
-        return null;
+        return new SqlFragment(sprintf(
+            'PRAGMA table_xinfo(%s)',
+            $this->identifier($this->physicalTableName($table, $connection), '"'),
+        ));
     }
 
-    public function hasCompatibleFullTextIndex(DatabaseIndexDefinition $index, Connection $connection): bool
+    public function hasConstraint(string $table, string $constraint, Connection $connection): bool
     {
-        return false;
+        $definition = $connection->query()
+            ->fromRaw('sqlite_master')
+            ->where('type', 'table')
+            ->where('name', $this->physicalTableName($table, $connection))
+            ->value('sql');
+
+        if (! is_string($definition)) {
+            return false;
+        }
+
+        $quotedConstraint = preg_quote($constraint, '/');
+
+        return preg_match(
+            '/\bCONSTRAINT\s+(?:["`\[]' . $quotedConstraint . '["`\]]|' . $quotedConstraint . '\b)/i',
+            $definition,
+        ) === 1;
     }
 
-    public function inspectGeneratedColumn(string $table, string $column): SqlFragment
+    public function hasTrigger(string $trigger, Connection $connection): bool
     {
-        return new SqlFragment(sprintf('PRAGMA table_xinfo(%s)', $this->identifier($table, '"')));
+        return $connection->query()
+            ->fromRaw('sqlite_master')
+            ->where('type', 'trigger')
+            ->where('name', $trigger)
+            ->exists();
     }
 }

@@ -108,7 +108,6 @@ use Capell\Core\Support\ContentGraph\Extractors\PageContentGraphExtractor;
 use Capell\Core\Support\ContentGraph\Extractors\PageUrlContentGraphExtractor;
 use Capell\Core\Support\ContentGraph\Extractors\SiteContentGraphExtractor;
 use Capell\Core\Support\Database\DatabasePlatformRegistry;
-use Capell\Core\Support\Database\FullTextIndexCompatibilityCache;
 use Capell\Core\Support\Database\Platforms\MariaDbDatabasePlatform;
 use Capell\Core\Support\Database\Platforms\MySqlDatabasePlatform;
 use Capell\Core\Support\Database\Platforms\PostgresDatabasePlatform;
@@ -174,6 +173,7 @@ use Capell\Core\ThemeStudio\Theme\WidgetPresentationRegistry;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Database\DatabaseManager;
 use Illuminate\Database\Eloquent\Relations\Relation;
 use Illuminate\Database\Schema\Blueprint as SchemaBlueprint;
 use Illuminate\Routing\Router;
@@ -457,7 +457,6 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         $this->app->singleton(PresentationPresetRegistry::class);
         $this->app->singleton(VendorAssetConditionRegistry::class);
         $this->app->singleton(SiteAccessPolicyRegistry::class);
-        $this->app->singleton(FullTextIndexCompatibilityCache::class);
         $this->app->scoped(
             DatabasePlatformRegistry::class,
             fn ($app): DatabasePlatformRegistry => new DatabasePlatformRegistry(
@@ -468,7 +467,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
                     $app->make(PostgresDatabasePlatform::class),
                     ...$app->tagged(DatabasePlatform::TAG),
                 ],
-                $app->make(FullTextIndexCompatibilityCache::class),
+                $app->make(DatabaseManager::class),
             ),
         );
         $this->app->singleton(DatabaseBackupDriverRegistry::class, fn ($app): DatabaseBackupDriverRegistry => new DatabaseBackupDriverRegistry([

@@ -21,9 +21,17 @@ interface DatabaseSchemaDialect
 
     public function jsonPathIndex(DatabaseIndexDefinition $index, string $column, string $path): ?SqlFragment;
 
-    public function fullTextIndex(DatabaseIndexDefinition $index): ?SqlFragment;
+    public function hasConstraint(string $table, string $constraint, Connection $connection): bool;
 
-    public function hasCompatibleFullTextIndex(DatabaseIndexDefinition $index, Connection $connection): bool;
+    public function hasTrigger(string $trigger, Connection $connection): bool;
 
-    public function inspectGeneratedColumn(string $table, string $column): SqlFragment;
+    public function hasForeignKeyReference(
+        string $table,
+        string $column,
+        string $foreignTable,
+        string $foreignColumn,
+        Connection $connection,
+    ): bool;
+
+    public function inspectGeneratedColumn(string $table, string $column, ?Connection $connection = null): SqlFragment;
 }

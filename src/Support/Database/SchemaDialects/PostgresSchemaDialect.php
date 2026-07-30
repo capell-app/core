@@ -9,7 +9,6 @@ use Capell\Core\Data\Database\DatabaseIndexDefinition;
 use Capell\Core\Data\Database\SqlFragment;
 use Capell\Core\Enums\Database\DatabaseCapability;
 use Illuminate\Database\Connection;
-use Throwable;
 
 final class PostgresSchemaDialect extends AbstractSchemaDialect implements DatabaseSchemaDialect
 {
@@ -19,7 +18,6 @@ final class PostgresSchemaDialect extends AbstractSchemaDialect implements Datab
             DatabaseCapability::GeneratedColumn,
             DatabaseCapability::StoredGeneratedColumn,
             DatabaseCapability::JsonPathIndex,
-            DatabaseCapability::FullTextIndex,
             DatabaseCapability::ForeignKeyDrop,
             DatabaseCapability::GeneratedColumnInspection => true,
             DatabaseCapability::PrefixIndex,
@@ -70,48 +68,30 @@ final class PostgresSchemaDialect extends AbstractSchemaDialect implements Datab
         ));
     }
 
-    public function fullTextIndex(DatabaseIndexDefinition $index): SqlFragment
-    {
-        $columns = implode(" || ' ' || ", array_map(
-            fn (string $column): string => sprintf("COALESCE(%s, '')", $this->identifier($column, '"')),
-            $index->columns,
-        ));
-
-        return new SqlFragment(sprintf(
-            "CREATE INDEX %s ON %s USING GIN (to_tsvector('simple', %s))",
-            $this->identifier($index->name, '"'),
-            $this->identifier($index->table, '"'),
-            $columns,
-        ));
-    }
-
-    public function hasCompatibleFullTextIndex(DatabaseIndexDefinition $index, Connection $connection): bool
-    {
-        if (! $this->supports(DatabaseCapability::FullTextIndex, $connection)) {
-            return false;
-        }
-
-        try {
-            $indexes = $connection->getSchemaBuilder()->getIndexes($index->table);
-        } catch (Throwable) {
-            return false;
-        }
-
-        foreach ($indexes as $existingIndex) {
-            if (strtolower($existingIndex['name']) === strtolower($index->name)
-                && strtolower($existingIndex['type']) === 'gin') {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    public function inspectGeneratedColumn(string $table, string $column): SqlFragment
+    public function inspectGeneratedColumn(string $table, string $column, ?Connection $connection = null): SqlFragment
     {
         return new SqlFragment(
             'SELECT generation_expression FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?',
-            [$table, $column],
+            [$this->physicalTableName($table, $connection), $column],
         );
+    }
+
+    public function hasConstraint(string $table, string $constraint, Connection $connection): bool
+    {
+        return $connection->query()
+            ->fromRaw('information_schema.table_constraints')
+            ->whereRaw('constraint_schema = current_schema()')
+            ->where('table_name', $this->physicalTableName($table, $connection))
+            ->where('constraint_name', $constraint)
+            ->exists();
+    }
+
+    public function hasTrigger(string $trigger, Connection $connection): bool
+    {
+        return $connection->query()
+            ->fromRaw('information_schema.triggers')
+            ->whereRaw('trigger_schema = current_schema()')
+            ->where('trigger_name', $trigger)
+            ->exists();
     }
 }

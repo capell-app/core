@@ -3,9 +3,7 @@
 declare(strict_types=1);
 
 use Capell\Core\Contracts\Database\DatabasePlatform;
-use Capell\Core\Contracts\Database\DatabaseSchemaDialect;
 use Capell\Core\Data\Database\DatabaseIndexDefinition;
-use Capell\Core\Data\Database\DatabaseSearchExpression;
 use Capell\Core\Data\Database\SqlFragment;
 use Capell\Core\Enums\Database\DatabaseCapability;
 use Capell\Core\Enums\Database\DatabaseDateOperation;
@@ -14,29 +12,17 @@ use Capell\Core\Enums\Database\DatabaseProvisioningResult;
 use Capell\Core\Exceptions\UnsupportedDatabaseDriver;
 use Capell\Core\Facades\CapellDatabase;
 use Capell\Core\Support\Database\DatabasePlatformRegistry;
-use Capell\Core\Support\Database\FullTextIndexCompatibilityCache;
 use Capell\Core\Support\Database\Platforms\MariaDbDatabasePlatform;
 use Capell\Core\Support\Database\Platforms\MySqlDatabasePlatform;
 use Capell\Core\Support\Database\Platforms\PostgresDatabasePlatform;
 use Capell\Core\Support\Database\Platforms\SqliteDatabasePlatform;
 use Illuminate\Database\Connection;
+use Illuminate\Database\DatabaseManager;
 use Illuminate\Database\Query\Builder;
-use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Database\SQLiteConnection;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
-
-it('rejects invalid database search expression weights', function (float $weight): void {
-    new DatabaseSearchExpression(SqlFragment::raw('title'), $weight);
-})->with([
-    'negative' => -1.0,
-    'infinite' => INF,
-    'not a number' => NAN,
-])->throws(InvalidArgumentException::class, 'Database search expression weights must be non-negative and finite.');
-
-it('allows zero weight search expressions', function (): void {
-    expect(new DatabaseSearchExpression(SqlFragment::raw('title'), 0.0)->weight)->toBe(0.0);
-});
 
 it('resolves every supported database driver through one registry seam', function (): void {
     $mysql = new MySqlDatabasePlatform;
@@ -45,11 +31,31 @@ it('resolves every supported database driver through one registry seam', functio
     $postgres = new PostgresDatabasePlatform;
     $registry = new DatabasePlatformRegistry([$mysql, $mariaDb, $sqlite, $postgres]);
 
-    expect($registry->for('mysql'))->toBe($mysql)
-        ->and($registry->for('mariadb'))->toBe($mariaDb)
-        ->and($registry->for('sqlite'))->toBe($sqlite)
-        ->and($registry->for('pgsql'))->toBe($postgres)
-        ->and($registry->for('postgresql'))->toBe($postgres);
+    expect($registry->forDriver('mysql'))->toBe($mysql)
+        ->and($registry->forDriver('mariadb'))->toBe($mariaDb)
+        ->and($registry->forDriver('sqlite'))->toBe($sqlite)
+        ->and($registry->forDriver('pgsql'))->toBe($postgres)
+        ->and($registry->forDriver('postgresql'))->toBe($postgres)
+        ->and($registry->for('mysql'))->toBe($mysql);
+});
+
+it('resolves a MariaDB server through an explicitly named mysql connection', function (): void {
+    $pdo = Mockery::mock(PDO::class);
+    $pdo->shouldReceive('getAttribute')
+        ->once()
+        ->with(PDO::ATTR_SERVER_VERSION)
+        ->andReturn('10.11.8-MariaDB');
+    $connection = Mockery::mock(Connection::class);
+    $connection->shouldReceive('getDriverName')->once()->andReturn('mysql');
+    $connection->shouldReceive('getPdo')->once()->andReturn($pdo);
+    $connections = Mockery::mock(DatabaseManager::class);
+    $connections->shouldReceive('connection')->once()->with('mysql')->andReturn($connection);
+    $mysql = new MySqlDatabasePlatform;
+    $mariaDb = new MariaDbDatabasePlatform;
+    $registry = new DatabasePlatformRegistry([$mysql, $mariaDb], connections: $connections);
+
+    expect($registry->forDriver('mysql'))->toBe($mysql)
+        ->and($registry->forConnection('mysql'))->toBe($mariaDb);
 });
 
 it('resolves configured connections and rejects duplicates and unknown drivers', function (): void {
@@ -61,79 +67,9 @@ it('resolves configured connections and rejects duplicates and unknown drivers',
         ->and(fn (): DatabasePlatformRegistry => $registry->register(new SqliteDatabasePlatform))
         ->toThrow(LogicException::class, 'Database driver [sqlite] is already registered.')
         ->and(fn (): DatabasePlatform => $registry->for('sqlsrv'))
-        ->toThrow(UnsupportedDatabaseDriver::class, 'Unsupported database driver [sqlsrv].');
-});
-
-it('caches full text index compatibility across registry scopes and supports invalidation', function (): void {
-    $connection = new SQLiteConnection(new PDO('sqlite::memory:'), 'primary', '', [
-        'driver' => 'sqlite',
-        'database' => 'primary',
-        'name' => 'search',
-        'host' => 'database.internal',
-    ]);
-    $equivalentConnection = new SQLiteConnection(new PDO('sqlite::memory:'), 'primary', '', [
-        'driver' => 'sqlite',
-        'database' => 'primary',
-        'name' => 'search',
-        'host' => 'database.internal',
-        'password' => 'different-secret-must-not-affect-the-cache-key',
-    ]);
-    $differentDatabase = new SQLiteConnection(new PDO('sqlite::memory:'), 'secondary', '', [
-        'driver' => 'sqlite',
-        'database' => 'secondary',
-        'name' => 'search',
-        'host' => 'database.internal',
-    ]);
-    $differentHost = new SQLiteConnection(new PDO('sqlite::memory:'), 'primary', '', [
-        'driver' => 'sqlite',
-        'database' => 'primary',
-        'name' => 'search',
-        'host' => 'database-replica.internal',
-    ]);
-    $index = new DatabaseIndexDefinition(
-        table: 'documents',
-        name: 'documents_search_index',
-        columns: ['title', 'body'],
-    );
-    $expressions = [
-        new DatabaseSearchExpression(SqlFragment::raw('title')),
-        new DatabaseSearchExpression(SqlFragment::raw('body')),
-    ];
-    $schemaDialect = Mockery::mock(DatabaseSchemaDialect::class);
-    $schemaDialect->shouldReceive('hasCompatibleFullTextIndex')
-        ->times(6)
-        ->andReturnTrue();
-    $platform = Mockery::mock(DatabasePlatform::class);
-    $platform->shouldReceive('drivers')->twice()->andReturn(['sqlite']);
-    $platform->shouldReceive('schemaDialect')->times(6)->andReturn($schemaDialect);
-    $platform->shouldReceive('queryDialect')->times(7)->andReturn((new SqliteDatabasePlatform)->queryDialect());
-    $cache = new FullTextIndexCompatibilityCache(maxEntries: 2);
-    $firstRegistry = new DatabasePlatformRegistry([$platform], $cache);
-    $secondRegistry = new DatabasePlatformRegistry([$platform], $cache);
-
-    $firstRegistry->fullTextSearch($connection, $index, $expressions, 'port');
-    $secondRegistry->fullTextSearch($equivalentConnection, $index, $expressions, 'port');
-
-    $secondRegistry->forgetFullTextIndexCompatibility($equivalentConnection, $index);
-
-    $firstRegistry->fullTextSearch($connection, $index, $expressions, 'port');
-    $secondRegistry->fullTextSearch($differentDatabase, $index, $expressions, 'port');
-    $secondRegistry->fullTextSearch($differentHost, $index, $expressions, 'port');
-
-    $firstRegistry->fullTextSearch($connection, $index, $expressions, 'port');
-
-    $secondRegistry->flushFullTextIndexCompatibility();
-    $firstRegistry->fullTextSearch($connection, $index, $expressions, 'port');
-});
-
-it('keeps the compatibility cache across scoped database registry resets', function (): void {
-    $firstRegistry = resolve(DatabasePlatformRegistry::class);
-    $firstCache = resolve(FullTextIndexCompatibilityCache::class);
-
-    app()->forgetScopedInstances();
-
-    expect(resolve(DatabasePlatformRegistry::class))->not->toBe($firstRegistry)
-        ->and(resolve(FullTextIndexCompatibilityCache::class))->toBe($firstCache);
+        ->toThrow(UnsupportedDatabaseDriver::class, 'Unsupported database driver [sqlsrv].')
+        ->and(fn (): DatabasePlatform => $registry->for('capell_missing_driver'))
+        ->toThrow(UnsupportedDatabaseDriver::class, 'Unsupported database driver [capell_missing_driver].');
 });
 
 it('declares platform family metadata and optional provisioners', function (): void {
@@ -356,234 +292,6 @@ it('repeats bound expression bindings in SQL placeholder order for relevance', f
         ->and($query->pluck('name')->all())->toBe(['Capell', 'Other']);
 });
 
-it('matches separated full text terms and ranks broader coverage with the portable fallback', function (): void {
-    $connection = new SQLiteConnection(new PDO('sqlite::memory:'), ':memory:', '', ['driver' => 'sqlite']);
-    $rows = $connection->query()->selectRaw(
-        '? AS title, ? AS body, ? AS slug',
-        ['alpha beta', 'alpha beta', 'dense'],
-    )->unionAll($connection->query()->selectRaw(
-        '? AS title, ? AS body, ? AS slug',
-        ['alpha begins here', 'and beta ends here', 'separated'],
-    ))->unionAll($connection->query()->selectRaw(
-        '? AS title, ? AS body, ? AS slug',
-        ['alpha only', 'without the other term', 'partial'],
-    ));
-    $query = $connection->query()->fromSub($rows, 'documents')->select('slug');
-    $search = (new SqliteDatabasePlatform)->queryDialect()->fullTextSearch(
-        [
-            new DatabaseSearchExpression(SqlFragment::raw('title')),
-            new DatabaseSearchExpression(SqlFragment::raw('body')),
-        ],
-        'alpha beta',
-    );
-
-    $search->predicate->applyWhere($query);
-    new SqlFragment(
-        $search->relevance->sql . ' AS search_score',
-        $search->relevance->bindings,
-    )->applySelect($query);
-    $ranked = $query->orderByDesc('search_score')->get();
-    $first = $ranked->first();
-    $last = $ranked->last();
-    throw_unless(is_object($first) && is_object($last), LogicException::class, 'Expected ranked full-text results.');
-
-    expect($search->native)->toBeFalse()
-        ->and($ranked->pluck('slug')->all())->toBe(['dense', 'separated'])
-        ->and((int) $first->search_score)
-        ->toBeGreaterThan((int) $last->search_score);
-});
-
-it('keeps portable full text values bound in SQL placeholder order', function (): void {
-    $search = (new SqliteDatabasePlatform)->queryDialect()->fullTextSearch(
-        [
-            new DatabaseSearchExpression(new SqlFragment('COALESCE(?, title)', ['expression-binding']), 2.5),
-            new DatabaseSearchExpression(new SqlFragment('COALESCE(?, summary)', ['zero-weight-binding']), 0.0),
-        ],
-        'alpha% beta_',
-    );
-    $expectedPredicateBindings = [
-        'expression-binding',
-        '%alpha!%%',
-        'zero-weight-binding',
-        '%alpha!%%',
-        'expression-binding',
-        '%beta!_%',
-        'zero-weight-binding',
-        '%beta!_%',
-    ];
-    $expectedRelevanceBindings = [
-        'expression-binding',
-        '%alpha!%%',
-        2.5,
-        'expression-binding',
-        '%beta!_%',
-        2.5,
-    ];
-
-    expect($search->predicate->sql)
-        ->not->toContain('alpha%', 'beta_')
-        ->toContain('summary')
-        ->and($search->relevance->sql)->not->toContain('summary')
-        ->and($search->predicate->bindings)->toBe($expectedPredicateBindings)
-        ->and($search->relevance->bindings)->toBe($expectedRelevanceBindings);
-});
-
-it('returns constant relevance when every searchable expression has zero weight', function (): void {
-    $search = (new SqliteDatabasePlatform)->queryDialect()->fullTextSearch(
-        [new DatabaseSearchExpression(new SqlFragment('COALESCE(?, title)', ['expression-binding']), 0.0)],
-        'alpha',
-    );
-
-    expect($search->predicate->bindings)->toBe(['expression-binding', '%alpha%'])
-        ->and($search->relevance)->toEqual(new SqlFragment('0'));
-});
-
-it('keeps native full text values bound in SQL placeholder order', function (
-    DatabasePlatform $platform,
-    array $expectedPredicateBindings,
-    array $expectedRelevanceBindings,
-): void {
-    $search = $platform->queryDialect()->fullTextSearch(
-        [
-            new DatabaseSearchExpression(new SqlFragment('title', ['title-binding']), 3.0),
-            new DatabaseSearchExpression(new SqlFragment('body', ['body-binding']), 2.0),
-            new DatabaseSearchExpression(new SqlFragment('keywords', ['keywords-binding']), 0.0),
-        ],
-        'alpha beta',
-        native: true,
-    );
-
-    expect($search->native)->toBeTrue()
-        ->and($search->predicate->sql)->not->toContain('alpha', 'beta')
-        ->and($search->predicate->bindings)->toBe($expectedPredicateBindings)
-        ->and($search->relevance->bindings)->toBe($expectedRelevanceBindings);
-})->with([
-    'mysql' => [
-        new MySqlDatabasePlatform,
-        ['title-binding', 'body-binding', 'keywords-binding', '+alpha* +beta*'],
-        [
-            'title-binding', '%alpha%', 3.0,
-            'body-binding', '%alpha%', 2.0,
-            'title-binding', '%beta%', 3.0,
-            'body-binding', '%beta%', 2.0,
-        ],
-    ],
-    'mariadb' => [
-        new MariaDbDatabasePlatform,
-        ['title-binding', 'body-binding', 'keywords-binding', '+alpha* +beta*'],
-        [
-            'title-binding', '%alpha%', 3.0,
-            'body-binding', '%alpha%', 2.0,
-            'title-binding', '%beta%', 3.0,
-            'body-binding', '%beta%', 2.0,
-        ],
-    ],
-    'postgresql' => [
-        new PostgresDatabasePlatform,
-        ['title-binding', 'body-binding', 'keywords-binding', "'alpha':* & 'beta':*"],
-        [
-            'title-binding', '%alpha%', 3.0,
-            'body-binding', '%alpha%', 2.0,
-            'title-binding', '%beta%', 3.0,
-            'body-binding', '%beta%', 2.0,
-        ],
-    ],
-]);
-
-it('escapes native full text prefix syntax inside bound queries', function (
-    DatabasePlatform $platform,
-    string $query,
-    string $expected,
-    array $expectedRelevanceBindings,
-): void {
-    $search = $platform->queryDialect()->fullTextSearch(
-        [new DatabaseSearchExpression(SqlFragment::raw('title'))],
-        $query,
-        native: true,
-    );
-
-    expect($search->predicate->sql)->not->toContain($query)
-        ->and($search->predicate->bindings)->toBe([$expected])
-        ->and($search->relevance->bindings)->toBe($expectedRelevanceBindings);
-})->with([
-    'mysql boolean operators' => [
-        new MySqlDatabasePlatform,
-        'alpha+ beta\\',
-        '+alpha\\+* +beta\\\\*',
-        ['%alpha+%', 1.0, '%beta\\%', 1.0],
-    ],
-    'postgresql quoted lexemes' => [
-        new PostgresDatabasePlatform,
-        "alpha' beta\\",
-        "'alpha''':* & 'beta\\\\':*",
-        ["%alpha'%", 1.0, '%beta\\%', 1.0],
-    ],
-]);
-
-it('selects native full text only when a compatible index exists', function (): void {
-    $connection = DB::connection();
-    $platform = CapellDatabase::for($connection);
-    $table = 'capell_full_text_search_test';
-    $index = new DatabaseIndexDefinition(
-        table: $table,
-        name: 'capell_full_text_search_test_index',
-        columns: ['title', 'body', 'keywords'],
-    );
-    $grammar = $connection->getQueryGrammar();
-    $expressions = [
-        new DatabaseSearchExpression(SqlFragment::raw($grammar->wrap('title')), 5.0),
-        new DatabaseSearchExpression(SqlFragment::raw($grammar->wrap('body')), 1.0),
-        new DatabaseSearchExpression(SqlFragment::raw($grammar->wrap('keywords')), 0.0),
-    ];
-    $schema = $connection->getSchemaBuilder();
-    $schema->dropIfExists($table);
-
-    try {
-        $schema->create($table, function (Blueprint $table): void {
-            $table->id();
-            $table->text('title');
-            $table->text('body');
-            $table->text('keywords');
-            $table->string('slug');
-        });
-        $connection->table($table)->insert([
-            ['title' => 'portable architecture', 'body' => 'unrelated copy', 'keywords' => '', 'slug' => 'strong-title'],
-            ['title' => 'portable starts here', 'body' => 'architecture ends here', 'keywords' => '', 'slug' => 'separated'],
-            ['title' => 'unrelated copy', 'body' => 'portable architecture', 'keywords' => '', 'slug' => 'weak-body'],
-            ['title' => 'unrelated copy', 'body' => 'unrelated copy', 'keywords' => 'portable architecture', 'slug' => 'zero-keywords'],
-            ['title' => 'portable only', 'body' => 'without the other term', 'keywords' => '', 'slug' => 'partial'],
-        ]);
-
-        $withoutIndex = CapellDatabase::fullTextSearch($connection, $index, $expressions, 'port arch');
-        $indexFragment = $platform->schemaDialect()->fullTextIndex($index);
-
-        if ($indexFragment instanceof SqlFragment) {
-            $connection->statement($indexFragment->sql, $indexFragment->bindings);
-            CapellDatabase::forgetFullTextIndexCompatibility($connection, $index);
-        }
-
-        $search = CapellDatabase::fullTextSearch($connection, $index, $expressions, 'port arch');
-        $query = $connection->table($table)->select('slug');
-        $search->predicate->applyWhere($query);
-        new SqlFragment(
-            $search->relevance->sql . ' AS search_score',
-            $search->relevance->bindings,
-        )->applySelect($query);
-
-        $ranked = $query->orderByDesc('search_score')->get();
-        $last = $ranked->last();
-        throw_unless(is_object($last), LogicException::class, 'Expected a zero-weight full-text result.');
-
-        expect($withoutIndex->native)->toBeFalse()
-            ->and($search->native)->toBe($platform->family() !== DatabaseFamily::Sqlite)
-            ->and($ranked->pluck('slug')->all())
-            ->toBe(['strong-title', 'separated', 'weak-body', 'zero-keywords'])
-            ->and((float) $last->search_score)->toBe(0.0);
-    } finally {
-        $schema->dropIfExists($table);
-    }
-});
-
 it('searches SQLite JSON array properties with wildcard paths', function (): void {
     $connection = new SQLiteConnection(new PDO('sqlite::memory:'), ':memory:', '', ['driver' => 'sqlite']);
     $matching = $connection->query()->fromSub(
@@ -797,7 +505,7 @@ it('builds schema expressions and reports family capabilities', function (): voi
         ->toThrow(InvalidArgumentException::class, 'Unsafe JSON path')
         ->and($mysql->schemaDialect()->hashColumn('insights_daily_rollups', 'path_digest', 'path'))
         ->toEqual(new SqlFragment('ALTER TABLE `insights_daily_rollups` ADD COLUMN `path_digest` CHAR(64) AS (SHA2(`path`, 256)) STORED'))
-        ->and($sqlite->schemaDialect()->supports(DatabaseCapability::FullTextIndex))->toBeFalse()
+        ->and($sqlite->schemaDialect()->supports(DatabaseCapability::PrefixIndex))->toBeFalse()
         ->and($postgres->schemaDialect()->supports(DatabaseCapability::JsonPathIndex))->toBeTrue();
 });
 
@@ -817,6 +525,19 @@ it('creates a SQLite JSON path index without DDL bindings', function (): void {
     expect($fragment->bindings)->toBeEmpty()
         ->and($connection->statement($fragment->sql))->toBeTrue()
         ->and($connection->table('sqlite_master')->where('name', 'capell_json_index_test_path')->exists())->toBeTrue();
+});
+
+it('finds quoted SQLite constraint names', function (): void {
+    $connection = new SQLiteConnection(new PDO('sqlite::memory:'), ':memory:', '', ['driver' => 'sqlite']);
+    $connection->statement(
+        'CREATE TABLE "capell_quoted_constraint" ("name" TEXT, CONSTRAINT "capell_name_check" CHECK ("name" <> \'\'))',
+    );
+
+    expect((new SqliteDatabasePlatform)->schemaDialect()->hasConstraint(
+        'capell_quoted_constraint',
+        'capell_name_check',
+        $connection,
+    ))->toBeTrue();
 });
 
 it('creates JSON path indexes on active MySQL and PostgreSQL engines', function (): void {
@@ -843,6 +564,111 @@ it('creates JSON path indexes on active MySQL and PostgreSQL engines', function 
         ->and($connection->statement($fragment->sql))->toBeTrue();
 });
 
+it('inspects constraints triggers and foreign key references on the active engine', function (): void {
+    $connection = DB::connection();
+    $platform = CapellDatabase::for($connection);
+    $family = $platform->family();
+    $originalPrefix = $connection->getTablePrefix();
+    $testPrefix = 'capell_meta_';
+    $connection->setTablePrefix($testPrefix);
+    $parentTable = 'parent';
+    $childTable = 'child';
+    $physicalParentTable = $testPrefix . $parentTable;
+    $physicalChildTable = $testPrefix . $childTable;
+    $trigger = 'capell_metadata_trigger';
+    $constraint = 'capell_metadata_check';
+    $connection->statement(sprintf('DROP TABLE IF EXISTS %s', $physicalChildTable));
+    $connection->statement(sprintf('DROP TABLE IF EXISTS %s', $physicalParentTable));
+
+    if ($family === DatabaseFamily::PostgreSql) {
+        $connection->unprepared('DROP FUNCTION IF EXISTS capell_metadata_trigger_fn()');
+    }
+
+    try {
+        $connection->statement(sprintf('CREATE TABLE %s (id INTEGER PRIMARY KEY)', $physicalParentTable));
+        $connection->statement(sprintf(
+            "CREATE TABLE %s (parent_id INTEGER, name VARCHAR(50), CONSTRAINT %s CHECK (name <> ''), CONSTRAINT capell_metadata_foreign FOREIGN KEY (parent_id) REFERENCES %s (id))",
+            $physicalChildTable,
+            $constraint,
+            $physicalParentTable,
+        ));
+
+        match ($family) {
+            DatabaseFamily::MySql,
+            DatabaseFamily::MariaDb => $connection->unprepared(sprintf(
+                'CREATE TRIGGER %s BEFORE INSERT ON %s FOR EACH ROW SET NEW.name = NEW.name',
+                $trigger,
+                $physicalChildTable,
+            )),
+            DatabaseFamily::PostgreSql => (function () use ($connection, $trigger, $physicalChildTable): void {
+                $connection->unprepared('CREATE FUNCTION capell_metadata_trigger_fn() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$');
+                $connection->unprepared(sprintf(
+                    'CREATE TRIGGER %s BEFORE INSERT ON %s FOR EACH ROW EXECUTE FUNCTION capell_metadata_trigger_fn()',
+                    $trigger,
+                    $physicalChildTable,
+                ));
+            })(),
+            DatabaseFamily::Sqlite => $connection->unprepared(sprintf(
+                'CREATE TRIGGER %s AFTER INSERT ON %s BEGIN SELECT 1; END',
+                $trigger,
+                $physicalChildTable,
+            )),
+        };
+
+        $dialect = $platform->schemaDialect();
+        $generatedColumn = $dialect->generatedColumn(
+            $physicalChildTable,
+            'name_length',
+            match ($family) {
+                DatabaseFamily::MySql,
+                DatabaseFamily::MariaDb => 'CHAR_LENGTH(name)',
+                DatabaseFamily::PostgreSql => 'char_length(name)',
+                DatabaseFamily::Sqlite => 'length(name)',
+            },
+            'INTEGER',
+        );
+        $connection->statement($generatedColumn->sql, $generatedColumn->bindings);
+        $generatedColumnInspection = $dialect->inspectGeneratedColumn(
+            $childTable,
+            'name_length',
+            $connection,
+        );
+        $generatedColumns = $connection->select(
+            $generatedColumnInspection->sql,
+            $generatedColumnInspection->bindings,
+        );
+
+        expect($dialect->hasConstraint($childTable, $constraint, $connection))->toBeTrue()
+            ->and($dialect->hasConstraint($childTable, 'missing_constraint', $connection))->toBeFalse()
+            ->and($dialect->hasTrigger($trigger, $connection))->toBeTrue()
+            ->and($dialect->hasTrigger('missing_trigger', $connection))->toBeFalse()
+            ->and($dialect->hasForeignKeyReference(
+                $childTable,
+                'parent_id',
+                $parentTable,
+                'id',
+                $connection,
+            ))->toBeTrue()
+            ->and($dialect->hasForeignKeyReference(
+                $childTable,
+                'parent_id',
+                'missing_parent',
+                'id',
+                $connection,
+            ))->toBeFalse()
+            ->and($generatedColumns)->not->toBeEmpty();
+    } finally {
+        $connection->statement(sprintf('DROP TABLE IF EXISTS %s', $physicalChildTable));
+        $connection->statement(sprintf('DROP TABLE IF EXISTS %s', $physicalParentTable));
+
+        if ($family === DatabaseFamily::PostgreSql) {
+            $connection->unprepared('DROP FUNCTION IF EXISTS capell_metadata_trigger_fn()');
+        }
+
+        $connection->setTablePrefix($originalPrefix);
+    }
+});
+
 it('caches mysql and mariadb version capabilities per connection', function (): void {
     $pdo = Mockery::mock(PDO::class);
     $pdo->shouldReceive('getAttribute')->once()->with(PDO::ATTR_SERVER_VERSION)->andReturn('10.11.8-MariaDB');
@@ -859,7 +685,7 @@ it('caches mysql and mariadb version capabilities per connection', function (): 
 
 it('binds the registry and facade as the shared runtime seam', function (): void {
     expect(resolve(DatabasePlatformRegistry::class))->toBe(resolve(DatabasePlatformRegistry::class))
-        ->and(CapellDatabase::for('sqlite')->family())->toBe(DatabaseFamily::Sqlite);
+        ->and(CapellDatabase::forDriver('sqlite')->family())->toBe(DatabaseFamily::Sqlite);
 });
 
 it('provisions sqlite files and skips empty server database names', function (): void {
@@ -891,4 +717,59 @@ it('reports an existing PostgreSQL database as ready', function (): void {
 
     expect((new PostgresDatabasePlatform)->provisioner()->provision($connectionName, $configuration))
         ->toBe(DatabaseProvisioningResult::Ready);
+});
+
+it('reports an existing MySQL or MariaDB database as ready', function (): void {
+    $connection = DB::connection();
+
+    if (! in_array($connection->getDriverName(), ['mysql', 'mariadb'], true)) {
+        $this->markTestSkipped('MySQL provisioning readiness requires a mysql or mariadb test connection.');
+    }
+
+    $connectionName = (string) config('database.default');
+    $configuration = config('database.connections.' . $connectionName);
+    throw_unless(is_array($configuration), LogicException::class, 'The MySQL test connection must be configured.');
+
+    expect((new MySqlDatabasePlatform)->provisioner()->provision($connectionName, $configuration))
+        ->toBe(DatabaseProvisioningResult::Ready);
+});
+
+it('creates reconnects to and reuses a disposable server database', function (): void {
+    $sourceConnection = DB::connection();
+    $platform = CapellDatabase::for($sourceConnection);
+    $family = $platform->family();
+
+    if (! in_array($family, [
+        DatabaseFamily::MySql,
+        DatabaseFamily::MariaDb,
+        DatabaseFamily::PostgreSql,
+    ], true)) {
+        $this->markTestSkipped('Disposable provisioning requires a mysql, mariadb, or pgsql test connection.');
+    }
+
+    $sourceConnectionName = (string) config('database.default');
+    $configuration = config('database.connections.' . $sourceConnectionName);
+    throw_unless(is_array($configuration), LogicException::class, 'The server test connection must be configured.');
+    $database = sprintf('capell_provisioner_test_%d', getmypid());
+    $connectionName = 'capell_provisioner_disposable';
+    $configuration['database'] = $database;
+    Config::set('database.connections.' . $connectionName, $configuration);
+    $provisioner = $platform->provisioner();
+    throw_unless($provisioner !== null, LogicException::class, 'The server platform must provide a database provisioner.');
+
+    try {
+        expect($provisioner->provision($connectionName, $configuration))
+            ->toBe(DatabaseProvisioningResult::Created)
+            ->and(DB::connection($connectionName)->getDatabaseName())->toBe($database)
+            ->and($provisioner->provision($connectionName, $configuration))
+            ->toBe(DatabaseProvisioningResult::Ready);
+    } finally {
+        DB::purge($connectionName);
+
+        $dropDatabase = $family === DatabaseFamily::PostgreSql
+            ? sprintf('DROP DATABASE IF EXISTS "%s"', $database)
+            : sprintf('DROP DATABASE IF EXISTS `%s`', $database);
+        $sourceConnection->unprepared($dropDatabase);
+        Config::set('database.connections.' . $connectionName);
+    }
 });
