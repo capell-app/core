@@ -113,6 +113,62 @@ it('enforces active routing identities while allowing soft-deleted history', fun
         ->and($replacement->routing_identity)->toBeString();
 });
 
+it('rejects normalized origin collisions even when the first domain is disabled', function (): void {
+    $attributes = [
+        'domain' => 'Example.test.',
+        'path' => '/docs/',
+        'scheme' => 'HTTPS',
+        'status' => false,
+    ];
+
+    SiteDomain::factory()->createOne($attributes);
+
+    expect(fn (): SiteDomain => SiteDomain::factory()->createOne([
+        ...$attributes,
+        'domain' => 'example.test',
+        'path' => 'docs',
+        'scheme' => 'https',
+    ]))->toThrow(QueryException::class);
+});
+
+it('normalizes default ports and IPv6 hosts into one routing identity', function (): void {
+    $attributes = [
+        'domain' => '[2001:DB8::1]',
+        'path' => '/',
+        'scheme' => 'HTTPS',
+        'port' => 443,
+    ];
+
+    SiteDomain::factory()->createOne($attributes);
+
+    expect(fn (): SiteDomain => SiteDomain::factory()->createOne([
+        ...$attributes,
+        'domain' => '2001:db8::1',
+        'port' => null,
+    ]))->toThrow(QueryException::class);
+});
+
+it('allows distinct primary and mounted aliases to share an origin host', function (): void {
+    $primary = SiteDomain::factory()->createOne([
+        'domain' => 'example.test',
+        'path' => '/',
+        'scheme' => 'https',
+        'port' => null,
+        'default' => true,
+    ]);
+    $alias = SiteDomain::factory()->createOne([
+        'domain' => 'example.test',
+        'path' => '/fr',
+        'scheme' => 'https',
+        'port' => 443,
+        'default' => false,
+    ]);
+
+    expect($primary->routing_identity)
+        ->not->toBe($alias->routing_identity)
+        ->and($alias->port)->toBeNull();
+});
+
 it('falls back to the request scheme when no scheme is configured', function (): void {
     config(['capell-frontend.default_scheme' => null]);
     request()->server->set('HTTPS', 'off');

@@ -8,6 +8,7 @@ use BackedEnum;
 use Capell\Core\Actions\BladeComponentFacadeResolver;
 use Capell\Core\Actions\ConfigureMailMarkdownComponentsAction;
 use Capell\Core\Actions\ConfigureMailMarkdownLogoAction;
+use Capell\Core\Console\Commands\AuditSiteDomainOriginsCommand;
 use Capell\Core\Console\Commands\BackupHealthCommand;
 use Capell\Core\Console\Commands\CacheComponentsCommand;
 use Capell\Core\Console\Commands\ClearComponentsCacheCommand;
@@ -19,6 +20,8 @@ use Capell\Core\Console\Commands\DoctorCommand;
 use Capell\Core\Console\Commands\ExtensionAuditCommand;
 use Capell\Core\Console\Commands\ExtensionPlaygroundCommand;
 use Capell\Core\Console\Commands\FakerCommand;
+use Capell\Core\Console\Commands\HealthCheckCommand;
+use Capell\Core\Console\Commands\HealthCommand;
 use Capell\Core\Console\Commands\HealthProbeCommand;
 use Capell\Core\Console\Commands\ImportSiteSpecCommand;
 use Capell\Core\Console\Commands\InstallCommand;
@@ -120,6 +123,8 @@ use Capell\Core\Support\Database\Platforms\MySqlDatabasePlatform;
 use Capell\Core\Support\Database\Platforms\PostgresDatabasePlatform;
 use Capell\Core\Support\Database\Platforms\SqliteDatabasePlatform;
 use Capell\Core\Support\Database\RuntimeSchemaState;
+use Capell\Core\Support\Health\DiskCapacityHealthCheck;
+use Capell\Core\Support\Health\HealthCheckRegistry;
 use Capell\Core\Support\Install\InstallPatchRegistry;
 use Capell\Core\Support\Install\InstallProfileRepository;
 use Capell\Core\Support\Links\LinkableContentRegistry;
@@ -156,6 +161,7 @@ use Capell\Core\Support\ProjectBuild\ProjectBuildArtifactHandlerRegistry;
 use Capell\Core\Support\ProjectBuild\ProjectBuildManifestMigrationRegistry;
 use Capell\Core\Support\ProjectBuild\SiteSpecProjectBuildArtifactHandler;
 use Capell\Core\Support\Publishing\GatePublicationTransitionAuthorizer;
+use Capell\Core\Support\Publishing\PublicationReadinessRegistry;
 use Capell\Core\Support\Redirects\PageUrlRedirectHitRecorder;
 use Capell\Core\Support\Redirects\PageUrlRedirectResolver;
 use Capell\Core\Support\Renderables\RenderableRegistry;
@@ -253,6 +259,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         }
 
         $package->hasCommands([
+            AuditSiteDomainOriginsCommand::class,
             CacheComponentsCommand::class,
             BackupHealthCommand::class,
             CloudBootstrapCommand::class,
@@ -265,6 +272,8 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
             ExtensionPlaygroundCommand::class,
             FakerCommand::class,
             HealthProbeCommand::class,
+            HealthCheckCommand::class,
+            HealthCommand::class,
             ImportSiteSpecCommand::class,
             InstallExtensionCommand::class,
             UninstallExtensionCommand::class,
@@ -475,6 +484,16 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         $this->app->singleton(ThemeChromeRegistry::class);
         $this->app->singleton(ThemeInstallDefaultsRegistry::class);
         $this->app->singleton(InstallPatchRegistry::class);
+        $this->app->singleton(PublicationReadinessRegistry::class, fn ($app): PublicationReadinessRegistry => new PublicationReadinessRegistry($app));
+        $this->app->singleton(HealthCheckRegistry::class);
+        $this->callAfterResolving(HealthCheckRegistry::class, function (HealthCheckRegistry $registry): void {
+            $path = config('capell.health.disk.path');
+            $registry->register(new DiskCapacityHealthCheck(
+                is_string($path) && $path !== '' ? $path : storage_path(),
+                max(0, (int) config('capell.health.disk.minimum_free_bytes', 1073741824)),
+                max(1, (int) config('capell.health.disk.timeout_seconds', 10)),
+            ));
+        });
         $this->app->singleton(PresentationPresetRegistry::class);
         $this->app->singleton(VendorAssetConditionRegistry::class);
         $this->app->singleton(SiteAccessPolicyRegistry::class);

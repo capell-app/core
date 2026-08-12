@@ -9,6 +9,7 @@ use Capell\Core\Actions\ProjectBuild\InstallProjectBuildManifestAction;
 use Capell\Core\Actions\ProjectBuild\ValidateProjectBuildManifestBundleAction;
 use Capell\Core\Actions\ProjectBuild\VerifyProjectBuildManifestSignatureAction;
 use Capell\Core\Actions\ProjectBuild\VerifyProjectBuildTargetCompatibilityAction;
+use Capell\Core\Actions\Publishing\BuildPublicationLocaleStatusAction;
 use Capell\Core\Contracts\Database\DatabasePlatform;
 use Capell\Core\Contracts\Database\DatabaseProvisioner;
 use Capell\Core\Contracts\Database\DatabaseQueryDialect;
@@ -29,6 +30,8 @@ use Capell\Core\Data\ProjectBuild\ProjectBuildRouteData;
 use Capell\Core\Data\ProjectBuild\ProjectBuildSignatureData;
 use Capell\Core\Data\ProjectBuild\ProjectBuildSiteData;
 use Capell\Core\Data\ProjectBuild\ProjectBuildSiteSpecReferenceData;
+use Capell\Core\Data\Publishing\PublicationLocaleStatusContextData;
+use Capell\Core\Data\Publishing\PublicationLocaleStatusData;
 use Capell\Core\Enums\Database\DatabaseCapability;
 use Capell\Core\Enums\Database\DatabaseDateOperation;
 use Capell\Core\Enums\Database\DatabaseFamily;
@@ -75,6 +78,21 @@ it('catalogues every supported extension surface kind from explicit metadata', f
             'core.schema.project-build-manifest-v1',
             'core.tag.project-build-artifact-handler',
             'core.tag.site-spec-applier',
+            'core.contract.publication-readiness-contributor',
+            'core.dto.publication-readiness-check',
+            'core.dto.publication-readiness-context',
+            'core.tag.publication-readiness-contributor',
+            'core.registry.publication-readiness',
+            'core.action.build-publication-locale-status',
+            'core.dto.publication-locale-status-context',
+            'core.dto.publication-locale-status',
+            'core.contract.operational-health-check',
+            'core.dto.health-check-result',
+            'core.dto.health-report',
+            'core.enum.health-severity',
+            'core.enum.health-status',
+            'core.tag.operational-health-check',
+            'core.registry.operational-health-check',
         );
 
     foreach ($catalog as $entry) {
@@ -297,6 +315,19 @@ it('classifies the marketplace composer publication seam as experimental', funct
         expect($entry->ownerPackage)->toBe('capell-app/marketplace')
             ->and($entry->stability)->toBe(ExtensionSurfaceStability::Experimental);
     }
+});
+
+it('catalogues the locale publication status projection as experimental', function (): void {
+    $catalog = collect(BuildExtensionSurfaceCatalogAction::run())->keyBy('id');
+
+    expect($catalog->get('core.action.build-publication-locale-status')?->identifier)
+        ->toBe(BuildPublicationLocaleStatusAction::class)
+        ->and($catalog->get('core.dto.publication-locale-status-context')?->identifier)
+        ->toBe(PublicationLocaleStatusContextData::class)
+        ->and($catalog->get('core.dto.publication-locale-status')?->identifier)
+        ->toBe(PublicationLocaleStatusData::class)
+        ->and($catalog->get('core.action.build-publication-locale-status')?->stability)
+        ->toBe(ExtensionSurfaceStability::Experimental);
 });
 
 it('rejects duplicate stable IDs', function (): void {
