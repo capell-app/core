@@ -29,20 +29,10 @@ final class ConfigArrayEditor
      */
     public function hasKey(string $arrayPath): bool
     {
-        return $this->findValue($arrayPath) instanceof Expr;
-    }
-
-    /**
-     * Find the expression at the specified path.
-     *
-     * @param  string  $arrayPath  Dot-separated path (e.g., 'disks.local')
-     */
-    public function findValue(string $arrayPath): ?Expr
-    {
         [$rootKey, $subKey] = array_pad(explode('.', $arrayPath, 2), 2, null);
 
         if ($rootKey === null) {
-            return null;
+            return false;
         }
 
         $ast = $this->editor->getAst();
@@ -53,11 +43,10 @@ final class ConfigArrayEditor
         );
 
         if ($returnStatement === null || ! $returnStatement->expr instanceof Array_) {
-            return null;
+            return false;
         }
 
         $array = $returnStatement->expr;
-        $rootValue = null;
 
         foreach ($array->items as $item) {
             if ($item === null) {
@@ -65,33 +54,27 @@ final class ConfigArrayEditor
             }
 
             if ($item->key instanceof String_ && $item->key->value === $rootKey) {
-                // PHP array literals resolve duplicate keys to their final declaration.
-                $rootValue = $item->value;
+                if ($subKey === null) {
+                    return true;
+                }
+
+                if ($item->value instanceof Array_) {
+                    foreach ($item->value->items as $subItem) {
+                        if ($subItem === null) {
+                            continue;
+                        }
+
+                        if ($subItem->key instanceof String_ && $subItem->key->value === $subKey) {
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
             }
         }
 
-        if ($subKey === null) {
-            return $rootValue;
-        }
-
-        if (! $rootValue instanceof Array_) {
-            return null;
-        }
-
-        $subValue = null;
-
-        foreach ($rootValue->items as $subItem) {
-            if ($subItem === null) {
-                continue;
-            }
-
-            if ($subItem->key instanceof String_ && $subItem->key->value === $subKey) {
-                // PHP array literals resolve duplicate keys to their final declaration.
-                $subValue = $subItem->value;
-            }
-        }
-
-        return $subValue;
+        return false;
     }
 
     /**

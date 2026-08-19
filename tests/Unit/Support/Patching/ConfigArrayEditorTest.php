@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 use Capell\Core\Support\Patching\ConfigArrayEditor;
 use Capell\Core\Support\Patching\PhpFileEditor;
-use PhpParser\Node\Expr\Array_;
 use PhpParser\Node\Scalar\String_;
 
 it('detects and inserts nested config array keys', function (): void {
@@ -27,9 +26,7 @@ PHP);
 
         expect($config->hasKey('disks'))->toBeTrue()
             ->and($config->hasKey('disks.local'))->toBeTrue()
-            ->and($config->hasKey('disks.page_cache'))->toBeFalse()
-            ->and($config->findValue('disks.local'))->toBeInstanceOf(Array_::class)
-            ->and($config->findValue('disks.page_cache'))->toBeNull();
+            ->and($config->hasKey('disks.page_cache'))->toBeFalse();
 
         $config->insertKey('disks.page_cache', new String_('cached-pages'));
         $editor->save();
@@ -37,39 +34,6 @@ PHP);
         $content = (string) file_get_contents($path);
         expect($content)->toContain("'page_cache' => 'cached-pages'")
             ->and(new ConfigArrayEditor(new PhpFileEditor($path))->hasKey('disks.page_cache'))->toBeTrue();
-    } finally {
-        if (file_exists($path)) {
-            unlink($path);
-        }
-    }
-});
-
-it('returns the effective value when PHP config keys are duplicated', function (): void {
-    $path = tempnam(sys_get_temp_dir(), 'capell_config_');
-    file_put_contents($path, <<<'PHP'
-<?php
-
-return [
-    'disks' => [
-        'page_cache' => 'discarded-inner',
-        'page_cache' => 'discarded-root',
-    ],
-    'disks' => [
-        'page_cache' => 'effective',
-    ],
-];
-PHP);
-
-    try {
-        $value = new ConfigArrayEditor(new PhpFileEditor($path))->findValue('disks.page_cache');
-
-        expect($value)->toBeInstanceOf(String_::class);
-
-        if (! $value instanceof String_) {
-            return;
-        }
-
-        expect($value->value)->toBe('effective');
     } finally {
         if (file_exists($path)) {
             unlink($path);

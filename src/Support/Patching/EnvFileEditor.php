@@ -61,25 +61,12 @@ final class EnvFileEditor
 
     public function backup(): string
     {
-        $baseBackupDir = storage_path('capell/install-guide-backups/' . Date::now()->format('Y-m-d-His'));
-        $backupDir = $baseBackupDir;
-        $suffix = 0;
-
-        while (true) {
-            if (is_dir($backupDir)) {
-                $suffix++;
-                $backupDir = $baseBackupDir . '-' . $suffix;
-
-                continue;
-            }
-
+        $backupDir = storage_path('capell/install-guide-backups/' . Date::now()->format('Y-m-d-His'));
+        if (! is_dir($backupDir)) {
             $created = @mkdir($backupDir, 0755, true);
-            if ($created || is_dir($backupDir)) {
-                break;
-            }
 
             throw_unless(
-                is_dir(dirname($backupDir)),
+                $created || is_dir($backupDir),
                 RuntimeException::class,
                 'Failed to create environment backup directory: ' . $backupDir,
             );
