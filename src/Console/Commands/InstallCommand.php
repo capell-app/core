@@ -15,6 +15,7 @@ use Capell\Core\Actions\RunNpmBuildAction;
 use Capell\Core\Console\Commands\Concerns\DescribesCommandOptions;
 use Capell\Core\Console\Commands\Concerns\HasPackageSelection;
 use Capell\Core\Console\Commands\Concerns\PromptsWithOptionFallback;
+use Capell\Core\Contracts\AdminPanelUrlResolver;
 use Capell\Core\Contracts\InstallOrchestrationHost;
 use Capell\Core\Contracts\ProgressReporter;
 use Capell\Core\Data\Install\DeveloperToolingChoiceData;
@@ -45,7 +46,6 @@ use Capell\Core\Support\Install\InstallProfileRepository;
 use Capell\Core\Support\Install\InstallRecommendationRepository;
 use Capell\Core\Support\Install\ThemePackageCandidates;
 use Capell\Core\Support\Install\WelcomeRouteInstaller;
-use Filament\Facades\Filament;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
@@ -353,6 +353,12 @@ class InstallCommand extends Command implements InstallOrchestrationHost
             'remove_installer_package' => $removeInstallerPackage,
         ]);
 
+        $cachesToClear = resolve(InstallCacheOptionResolver::class)->resolve(
+            (bool) $clearCache,
+            $freshInstall,
+            fn (string $command): bool => $this->getApplication()?->has($command) === true,
+        );
+
         $inputData = $this->buildInstallInput(
             siteUrl: $siteUrl,
             packages: $packages,
@@ -378,8 +384,7 @@ class InstallCommand extends Command implements InstallOrchestrationHost
             seedDefaultData: $seedDefaultData,
             runNpmBuild: $runNpmBuild,
             removeInstallerPackage: $removeInstallerPackage,
-            clearCache: (bool) $clearCache,
-            freshInstall: $freshInstall,
+            cachesToClear: $cachesToClear,
         );
     }
 
@@ -545,14 +550,14 @@ class InstallCommand extends Command implements InstallOrchestrationHost
         return CommandAlias::SUCCESS;
     }
 
+    /** @param array<string> $cachesToClear */
     private function runInstallOrchestration(
         InstallInputData $inputData,
         ProgressReporter $reporter,
         bool $seedDefaultData,
         bool $runNpmBuild,
         bool $removeInstallerPackage,
-        bool $clearCache,
-        bool $freshInstall,
+        array $cachesToClear,
     ): int {
         $this->orchestratedSeedDefaultData = $seedDefaultData;
 
@@ -564,11 +569,7 @@ class InstallCommand extends Command implements InstallOrchestrationHost
                     outputPlan: ! $this->input->isInteractive(),
                     runNpmBuild: $runNpmBuild,
                     removeInstaller: $removeInstallerPackage,
-                    cachesToClear: resolve(InstallCacheOptionResolver::class)->resolve(
-                        $clearCache,
-                        $freshInstall,
-                        fn (string $command): bool => $this->getApplication()?->has($command) === true,
-                    ),
+                    cachesToClear: $cachesToClear,
                 ),
                 $reporter,
                 $this,
@@ -723,13 +724,7 @@ class InstallCommand extends Command implements InstallOrchestrationHost
 
     private function installAdminUrl(): ?string
     {
-        try {
-            $panelId = (string) config('capell-admin.panel.id', 'admin');
-
-            return Filament::getPanel($panelId)->getUrl();
-        } catch (Throwable) {
-            return null;
-        }
+        return resolve(AdminPanelUrlResolver::class)->resolve();
     }
 
     private function installFirstPageStatus(): string
