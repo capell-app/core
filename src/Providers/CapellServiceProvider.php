@@ -83,6 +83,7 @@ use Capell\Core\Listeners\CreateRedirectsForChangedPageUrls;
 use Capell\Core\Listeners\PageTranslationCreatingListener;
 use Capell\Core\Listeners\PageTranslationDeletedListener;
 use Capell\Core\Listeners\PageTranslationSavedListener;
+use Capell\Core\Listeners\RebuildContentGraphOnPageRollbackSubscriber;
 use Capell\Core\Macros\BlueprintMacros;
 use Capell\Core\Models\ActivityBucket;
 use Capell\Core\Models\ActivityVisitor;
@@ -123,6 +124,7 @@ use Capell\Core\Support\ContentGraph\ContentGraphRegistry;
 use Capell\Core\Support\ContentGraph\Extractors\LayoutContentGraphExtractor;
 use Capell\Core\Support\ContentGraph\Extractors\MediaContentGraphExtractor;
 use Capell\Core\Support\ContentGraph\Extractors\PageContentGraphExtractor;
+use Capell\Core\Support\ContentGraph\Extractors\PageEmbedContentGraphExtractor;
 use Capell\Core\Support\ContentGraph\Extractors\PageUrlContentGraphExtractor;
 use Capell\Core\Support\ContentGraph\Extractors\SiteContentGraphExtractor;
 use Capell\Core\Support\Database\DatabasePlatformRegistry;
@@ -610,6 +612,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
             LayoutContentGraphExtractor::class,
             MediaContentGraphExtractor::class,
             PageContentGraphExtractor::class,
+            PageEmbedContentGraphExtractor::class,
             PageUrlContentGraphExtractor::class,
             SiteContentGraphExtractor::class,
         ], ContentGraphRegistry::TAG);
@@ -973,6 +976,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         Event::listen('eloquent.creating: ' . Translation::class, PageTranslationCreatingListener::class);
         Event::listen('eloquent.saved: ' . Translation::class, PageTranslationSavedListener::class);
         Event::listen('eloquent.deleted: ' . Translation::class, PageTranslationDeletedListener::class);
+        CapellCore::subscriberManager()->subscribe(RebuildContentGraphOnPageRollbackSubscriber::class);
 
         return $this;
     }
