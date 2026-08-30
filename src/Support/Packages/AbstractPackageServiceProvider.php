@@ -8,6 +8,8 @@ use Capell\Core\Actions\RegisterBlazeOptimizedViewsAction;
 use Capell\Core\Contracts\PackageServiceProvidable;
 use Capell\Core\Enums\PackageTypeEnum;
 use Capell\Core\Facades\CapellCore;
+use Capell\Core\Support\Extensions\ExtensionContributionReceiptContext;
+use Capell\Core\Support\Extensions\ExtensionContributionReceiptRegistry;
 use Capell\Core\Support\PackageRegistry\CapellPackageRegistry;
 use Closure;
 use Composer\InstalledVersions;
@@ -43,10 +45,20 @@ abstract class AbstractPackageServiceProvider extends PackageServiceProvider imp
         $this->registerPackageMetadata();
 
         $this->booted(function (): void {
-            $this->bootPackage();
+            $receipts = $this->app->make(ExtensionContributionReceiptRegistry::class);
+            $contexts = $receipts->providerContexts(static::class);
+            if ($contexts === []) {
+                $contexts[] = TrustedCorePackages::contains($this->receiptOwnerPackage())
+                    ? ExtensionContributionReceiptContext::foundation($this->receiptOwnerPackage(), $this->receiptProviderBucket(), static::class)
+                    : ExtensionContributionReceiptContext::forPackage($this->receiptOwnerPackage(), $this->receiptProviderBucket(), static::class);
+            }
 
-            $this->bootWhenInstalled(function (): void {
-                $this->bootInstalledPackage();
+            $receipts->withContexts($contexts, function (): void {
+                $this->bootPackage();
+
+                $this->bootWhenInstalled(function (): void {
+                    $this->bootInstalledPackage();
+                });
             });
         });
     }
@@ -212,5 +224,22 @@ abstract class AbstractPackageServiceProvider extends PackageServiceProvider imp
         }
 
         throw new RuntimeException('Package root could not be resolved for ' . static::$packageName);
+    }
+
+    private function receiptOwnerPackage(): string
+    {
+        return static::$packageName === 'capell-app/capell' ? 'capell-app/core' : static::$packageName;
+    }
+
+    private function receiptProviderBucket(): string
+    {
+        return match ($this->receiptOwnerPackage()) {
+            'capell-app/core' => 'runtime',
+            'capell-app/admin' => 'admin',
+            'capell-app/frontend' => 'frontend',
+            'capell-app/installer' => 'install',
+            'capell-app/marketplace' => 'admin',
+            default => 'runtime',
+        };
     }
 }

@@ -10,6 +10,7 @@ use Capell\Admin\Support\AdminEventRouter;
 use Capell\Admin\Support\AdminRuntimeActivator;
 use Capell\Admin\Support\AdminSurfaceContributionCache;
 use Capell\Admin\Support\AdminSurfaceContributionRegistry;
+use Capell\Admin\Support\AdminZoneRegistry;
 use Capell\Admin\Support\Bridges\AdminBridgeRegistrar;
 use Capell\Admin\Support\Bridges\AdminBridgeRegistry;
 use Capell\Admin\Support\CapellAdminManager;
@@ -41,6 +42,8 @@ use Capell\Core\Support\Cache\CapellCacheManager;
 use Capell\Core\Support\CapellCoreManager;
 use Capell\Core\Support\Components\ComponentRegistry;
 use Capell\Core\Support\ContentGraph\ContentGraphRegistry;
+use Capell\Core\Support\Extensions\ExtensionContributionReceiptRegistry;
+use Capell\Core\Support\Extensions\ExtensionOrderingAudit;
 use Capell\Core\Support\Health\HealthCheckRegistry;
 use Capell\Core\Support\Install\InstallPatchRegistry;
 use Capell\Core\Support\Links\LinkableContentRegistry;
@@ -76,6 +79,7 @@ use Capell\Frontend\Support\Assets\FrontendPackageDependencyRegistry;
 use Capell\Frontend\Support\Assets\FrontendResourceRegistry;
 use Capell\Frontend\Support\Assets\FrontendViteInputRegistry;
 use Capell\Frontend\Support\Cache\CacheInvalidationDependencyRegistry;
+use Capell\Frontend\Support\Cache\PublicRenderDataCacheDependencyRegistry;
 use Capell\Frontend\Support\Components\FrontendComponentRegistry;
 use Capell\Frontend\Support\Links\PublicRouteAliasRegistry;
 use Capell\Frontend\Support\Locale\FrontendLocaleScope;
@@ -132,6 +136,8 @@ final class SingletonLifetimeInventory
             ThemeChromeRegistry::class => self::boot('Theme chrome definitions are package boot registrations.'),
             ThemeInstallDefaultsRegistry::class => self::boot('Theme install defaults are package boot registrations.'),
             InstallPatchRegistry::class => self::boot('Install patches are package boot registrations.'),
+            ExtensionContributionReceiptRegistry::class => self::boot('Contribution receipts and boot contexts are package boot registrations.'),
+            ExtensionOrderingAudit::class => self::boot('Ordering audit sources are package boot registrations and collect diagnostics from boot registries.'),
             PresentationPresetRegistry::class => self::boot('Presentation presets are package boot registrations.'),
             PublicationReadinessRegistry::class => self::boot('Publication readiness contributors are package boot registrations; explicit clear is reserved for test/runtime reset boundaries.'),
             VendorAssetConditionRegistry::class => self::boot('Vendor asset conditions are package boot registrations.'),
@@ -174,6 +180,7 @@ final class SingletonLifetimeInventory
             AdminEventRouter::class => self::boot('The router reads the boot-lifetime admin event registry and does not retain operation payloads.'),
             AdminBridgeRegistrar::class => self::boot('The registrar delegates only to boot-lifetime bridge and settings registries.'),
             AdminWorkspaceRegistry::class => self::boot('Workspace definitions are package boot registrations; actor-specific resolution is computed from the boot definitions.'),
+            AdminZoneRegistry::class => self::boot('Admin zone contributions are package boot registrations; request resolution is computed from the boot definitions.'),
             AdminPermissionSynchronizer::class => self::stateless('The synchronizer retains collaborators but no operation-derived values.'),
 
             // Frontend boot registration state and one reset participant.
@@ -192,6 +199,7 @@ final class SingletonLifetimeInventory
             FrontendPackageDependencyRegistry::class => self::boot('Frontend package dependencies are package boot registrations.'),
             FrontendViteInputRegistry::class => self::boot('Vite inputs are package boot registrations.'),
             CacheInvalidationDependencyRegistry::class => self::boot('Invalidation dependencies are package boot registrations.'),
+            PublicRenderDataCacheDependencyRegistry::class => self::boot('Public render-data cache dependencies are package boot registrations.'),
             DefaultFrontendResourcePlanRenderer::class => self::stateless('The renderer retains collaborators but no operation-derived values.'),
             FrontendHookRegistrar::class => self::boot('The registrar delegates only to the boot-lifetime render hook registry.'),
             ReservedFrontendRequest::class => self::boot('The predicate reads boot-lifetime reserved path and domain registries.'),

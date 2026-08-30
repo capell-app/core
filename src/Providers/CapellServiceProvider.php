@@ -58,8 +58,9 @@ use Capell\Core\Contracts\ActivitySettingsReader;
 use Capell\Core\Contracts\AdminPanelUrlResolver;
 use Capell\Core\Contracts\BladeComponentResolverInterface;
 use Capell\Core\Contracts\Database\DatabasePlatform;
+use Capell\Core\Contracts\Extensions\BootsExtensionContributionReceiptContext;
+use Capell\Core\Contracts\Extensions\RecordsExtensionContributionReceipt;
 use Capell\Core\Contracts\Makers\MakerRegistryInterface;
-use Capell\Core\Contracts\Media\MediaFieldFactory;
 use Capell\Core\Contracts\Media\MediaUploadConfigurationFactory;
 use Capell\Core\Contracts\Media\MediaUploadMetadataResolver;
 use Capell\Core\Contracts\Metrics\MetricScopeAuthorizer;
@@ -76,6 +77,7 @@ use Capell\Core\Enums\ComponentTypeEnum;
 use Capell\Core\Enums\LivewirePageComponentEnum;
 use Capell\Core\Enums\RenderableTypeEnum;
 use Capell\Core\Events\PageSaved;
+use Capell\Core\Events\PageUrlsRewritten;
 use Capell\Core\Events\ServingCapell;
 use Capell\Core\Facades\CapellCore;
 use Capell\Core\Http\Middleware\EnsureMultiNodeUploadsUseSharedStorage;
@@ -133,6 +135,8 @@ use Capell\Core\Support\Database\Platforms\MySqlDatabasePlatform;
 use Capell\Core\Support\Database\Platforms\PostgresDatabasePlatform;
 use Capell\Core\Support\Database\Platforms\SqliteDatabasePlatform;
 use Capell\Core\Support\Database\RuntimeSchemaState;
+use Capell\Core\Support\Extensions\ExtensionContributionReceiptRegistry;
+use Capell\Core\Support\Extensions\ExtensionOrderingAudit;
 use Capell\Core\Support\Health\DiskCapacityHealthCheck;
 use Capell\Core\Support\Health\HealthCheckRegistry;
 use Capell\Core\Support\Install\InstallPatchRegistry;
@@ -152,7 +156,6 @@ use Capell\Core\Support\Makers\MakerRegistry;
 use Capell\Core\Support\Makers\MakerSafety;
 use Capell\Core\Support\Media\BackendResolver;
 use Capell\Core\Support\Media\ImageUrlPolicy;
-use Capell\Core\Support\Media\SpatieMediaFieldFactory;
 use Capell\Core\Support\Media\SpatieMediaUploadConfigurationFactory;
 use Capell\Core\Support\Media\SpatieMediaUploadMetadataResolver;
 use Capell\Core\Support\Metrics\DenyMetricScopeAuthorizer;
@@ -190,6 +193,7 @@ use Capell\Core\Support\Subscriber\SubscriberManager;
 use Capell\Core\Support\Subscriber\SubscriberRegistry;
 use Capell\Core\Support\Themes\ThemeChromeRegistry;
 use Capell\Core\Support\Themes\ThemeInstallDefaultsRegistry;
+use Capell\Core\Support\Url\PageUrlRewriteContext;
 use Capell\Core\ThemeStudio\Assets\ThemeTokenStore;
 use Capell\Core\ThemeStudio\Contracts\ThemeRuntimeSettings;
 use Capell\Core\ThemeStudio\Discovery\LocalAppThemeDefinitionRepository;
@@ -243,9 +247,10 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         $this->app->scoped(ProjectBuildManifestMigrationRegistry::class);
         $this->app->tag([SiteSpecProjectBuildArtifactHandler::class], ProjectBuildArtifactHandler::TAG);
         $this->app->scoped(SiteSpecApplierRegistry::class);
+        $this->app->scoped(PageUrlRewriteContext::class);
 
-        $this->app->register(MediaLibraryServiceProvider::class);
         config(['media-library.media_model' => Media::class]);
+        $this->app->register(MediaLibraryServiceProvider::class);
         $this->loadTranslationsFrom(__DIR__ . '/../../resources/lang', self::$name);
         $this->loadTranslationsFrom(__DIR__ . '/../../resources/lang', 'capell-core');
         $this->app->make(PackageRegistryBootstrapper::class)->bootstrap();
@@ -503,11 +508,20 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         $this->app->bindIf(AdminPanelUrlResolver::class, UnavailableAdminPanelUrlResolver::class);
         $this->app->bindIf(MediaUploadConfigurationFactory::class, SpatieMediaUploadConfigurationFactory::class);
         $this->app->bindIf(MediaUploadMetadataResolver::class, SpatieMediaUploadMetadataResolver::class);
-        $this->app->bindIf(MediaFieldFactory::class, SpatieMediaFieldFactory::class);
+        // Keep these legacy class names as strings so the compatibility binding
+        // remains available without creating a new deprecated symbol reference.
+        $this->app->bindIf(
+            'Capell\\Core\\Contracts\\Media\\MediaFieldFactory',
+            'Capell\\Core\\Support\\Media\\SpatieMediaFieldFactory',
+        );
 
         $this->app->singleton(CapellCacheManager::class);
         $this->app->singleton(ModelInterceptorRegistry::class);
         $this->app->singletonIf(CapellPackageRegistry::class);
+        $this->app->singleton(ExtensionContributionReceiptRegistry::class);
+        $this->app->singleton(ExtensionOrderingAudit::class);
+        $this->app->alias(ExtensionContributionReceiptRegistry::class, RecordsExtensionContributionReceipt::class);
+        $this->app->alias(ExtensionContributionReceiptRegistry::class, BootsExtensionContributionReceiptContext::class);
 
         $this->app->tag([CapellCoreManager::class, ComponentRegistry::class], Resettable::TAG);
         $this->app->scoped(ImageUrlPolicy::class);
@@ -517,6 +531,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
             $app->make(MetricCollectorRegistry::class),
             $app->make(OutboundEventRegistry::class),
             $app->make(BlueprintSubjectRegistry::class),
+            $app->make(ExtensionContributionReceiptRegistry::class),
         ));
         $this->app->singleton(OutboundEventRegistry::class);
         $this->app->singleton(BlueprintSubjectRegistry::class);
@@ -531,7 +546,11 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         $this->app->singleton(ContentGraphRegistry::class, fn (): ContentGraphRegistry => new ContentGraphRegistry($this->app));
         $this->app->singleton(ThemeChromeRegistry::class);
         $this->app->singleton(ThemeInstallDefaultsRegistry::class);
-        $this->app->singleton(InstallPatchRegistry::class);
+        $this->app->singleton(InstallPatchRegistry::class, fn ($app): InstallPatchRegistry => new InstallPatchRegistry(
+            $app->bound(RecordsExtensionContributionReceipt::class)
+                ? $app->make(RecordsExtensionContributionReceipt::class)
+                : null,
+        ));
         $this->app->singleton(PublicationReadinessRegistry::class, fn ($app): PublicationReadinessRegistry => new PublicationReadinessRegistry($app));
         $this->app->singleton(HealthCheckRegistry::class);
         $this->callAfterResolving(HealthCheckRegistry::class, function (HealthCheckRegistry $registry): void {
@@ -948,6 +967,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         );
 
         Event::listen(PageSaved::class, [CreateRedirectsForChangedPageUrls::class, 'handle']);
+        Event::listen(PageUrlsRewritten::class, [CreateRedirectsForChangedPageUrls::class, 'handleUrlRewrite']);
 
         return $this;
     }

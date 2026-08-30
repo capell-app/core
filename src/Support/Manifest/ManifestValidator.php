@@ -17,6 +17,7 @@ use Capell\Core\Contracts\Extensions\RegistersExtensionFrontendComponent;
 use Capell\Core\Contracts\Extensions\RegistersExtensionOutboundEvent;
 use Capell\Core\Contracts\Extensions\RegistersExtensionPageType;
 use Capell\Core\Contracts\Extensions\RegistersExtensionPermission;
+use Capell\Core\Contracts\Extensions\RegistersExtensionPublicRenderData;
 use Capell\Core\Contracts\Extensions\RegistersExtensionRenderHook;
 use Capell\Core\Contracts\Extensions\RegistersExtensionRoute;
 use Capell\Core\Contracts\Extensions\RegistersExtensionSection;
@@ -188,6 +189,7 @@ final class ManifestValidator
 
         $this->validateClassList($data['providers'], $namespacePrefixes, $isTrustedCore, ServiceProvider::class);
         $this->validateContributions($data, $namespacePrefixes, $isTrustedCore);
+        $this->validateContributionTraceability($data);
         $this->sectionValidators[0]->validate($data);
         $this->sectionValidators[1]->validate($data);
         $this->validateHealthChecks($data, $namespacePrefixes, $isTrustedCore);
@@ -265,6 +267,95 @@ final class ManifestValidator
         }
     }
 
+    /** @param array<string, mixed> $data */
+    private function validateContributionTraceability(array $data): void
+    {
+        if (! array_key_exists('contributionTraceability', $data)) {
+            return;
+        }
+
+        $traceability = $data['contributionTraceability'];
+        if ($traceability === []) {
+            return;
+        }
+
+        if (! is_array($traceability)) {
+            throw InvalidManifestException::invalidField('contributionTraceability', 'must be an object');
+        }
+
+        $allowedFields = ['deferredContributions', 'runtimeIntegrations', 'contributions'];
+        if (array_diff(array_keys($traceability), $allowedFields) !== []) {
+            throw InvalidManifestException::invalidField('contributionTraceability', 'contains unknown fields');
+        }
+
+        $this->rules->stringList($traceability, 'deferredContributions', required: false);
+
+        if (isset($traceability['runtimeIntegrations']) && ! is_array($traceability['runtimeIntegrations'])) {
+            throw InvalidManifestException::invalidField('contributionTraceability.runtimeIntegrations', 'must be an object');
+        }
+
+        foreach (($traceability['runtimeIntegrations'] ?? []) as $key => $values) {
+            if (! is_array($values)) {
+                throw InvalidManifestException::invalidField('contributionTraceability.runtimeIntegrations', 'must map each key to a string list or event listener list');
+            }
+
+            $validStringList = true;
+            $validListenerList = $values !== [];
+
+            foreach ($values as $value) {
+                if (! is_string($value) || $value === '') {
+                    $validStringList = false;
+                }
+
+                if (! is_array($value)
+                    || array_diff(array_keys($value), ['event', 'listener']) !== []
+                    || array_diff(['event', 'listener'], array_keys($value)) !== []
+                    || ! is_string($value['event'] ?? null)
+                    || $value['event'] === ''
+                    || ! is_string($value['listener'] ?? null)
+                    || $value['listener'] === '') {
+                    $validListenerList = false;
+                }
+            }
+
+            if (! is_string($key) || (! $validStringList && ! $validListenerList)) {
+                throw InvalidManifestException::invalidField('contributionTraceability.runtimeIntegrations', 'must map each key to a string list or event listener list');
+            }
+        }
+
+        $entries = $traceability['contributions'] ?? [];
+        if (! is_array($entries) || ! array_is_list($entries)) {
+            throw InvalidManifestException::invalidField('contributionTraceability.contributions', 'must be a list');
+        }
+
+        foreach ($entries as $index => $entry) {
+            if (! is_array($entry)) {
+                throw InvalidManifestException::invalidField('contributionTraceability.contributions.' . $index, 'must be an object');
+            }
+
+            $allowedEntryFields = ['type', 'key', 'class', 'providerBucket'];
+            if (array_diff(array_keys($entry), $allowedEntryFields) !== []) {
+                throw InvalidManifestException::invalidField('contributionTraceability.contributions.' . $index, 'contains unknown fields');
+            }
+
+            foreach (['type', 'key', 'providerBucket'] as $field) {
+                if (! is_string($entry[$field] ?? null) || $entry[$field] === '') {
+                    throw InvalidManifestException::missingField('contributionTraceability.contributions.' . $index . '.' . $field);
+                }
+            }
+
+            if (array_key_exists('class', $entry)
+                && (! is_string($entry['class']) || $entry['class'] === '')) {
+                throw InvalidManifestException::invalidField('contributionTraceability.contributions.' . $index . '.class', 'must be a non-empty string');
+            }
+
+            if (! ExtensionContributionType::tryFrom($entry['type']) instanceof ExtensionContributionType
+                || ! in_array($entry['providerBucket'], self::VALID_PROVIDER_BUCKETS, true)) {
+                throw InvalidManifestException::invalidField('contributionTraceability.contributions.' . $index, 'contains an invalid type or provider bucket');
+            }
+        }
+    }
+
     /**
      * @param  array<string, mixed>  $data
      * @param  list<string>  $namespacePrefixes
@@ -295,6 +386,17 @@ final class ManifestValidator
             }
 
             $this->validateClass($class, $namespacePrefixes, $isTrustedCore, $this->expectedContributionContract($type));
+
+            if (array_key_exists('key', $contribution)
+                && (! is_string($contribution['key']) || $contribution['key'] === '')) {
+                throw InvalidManifestException::invalidField(sprintf('contributes.%d.key', $index), 'must be a non-empty string');
+            }
+
+            if (array_key_exists('providerBucket', $contribution)
+                && (! is_string($contribution['providerBucket'])
+                    || ! in_array($contribution['providerBucket'], self::VALID_PROVIDER_BUCKETS, true))) {
+                throw InvalidManifestException::invalidField(sprintf('contributes.%d.providerBucket', $index), 'must be a valid provider bucket');
+            }
 
             if ($type === ExtensionContributionType::ContentWidget) {
                 $key = $contribution['key'] ?? null;
@@ -405,6 +507,7 @@ final class ManifestValidator
             ExtensionContributionType::FrontendComponent => RegistersExtensionFrontendComponent::class,
             ExtensionContributionType::ContentWidget => RegistersExtensionContentWidget::class,
             ExtensionContributionType::RenderHook => RegistersExtensionRenderHook::class,
+            ExtensionContributionType::PublicRenderData => RegistersExtensionPublicRenderData::class,
             ExtensionContributionType::Asset => RegistersExtensionAsset::class,
             ExtensionContributionType::Migration => RunsExtensionMigration::class,
             ExtensionContributionType::ScheduledJob => RunsScheduledExtensionJob::class,

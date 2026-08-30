@@ -174,6 +174,7 @@
                             "frontend-component",
                             "content-widget",
                             "render-hook",
+                            "public-render-data",
                             "asset",
                             "migration",
                             "scheduled-job",
@@ -181,7 +182,6 @@
                             "agent-capability",
                             "content-graph",
                             "health-check",
-                            "content-graph",
                             "workflow-attention",
                             "outbound-event",
                             "blueprint-subject"
@@ -191,9 +191,16 @@
                         "type": "string",
                         "minLength": 1
                     },
+                    "implementation": {
+                        "type": "string",
+                        "minLength": 1
+                    },
                     "key": {
                         "type": "string",
                         "pattern": "^[a-z0-9][a-z0-9-]*\\.[a-z0-9][a-z0-9.-]*$"
+                    },
+                    "providerBucket": {
+                        "enum": ["metadata", "install", "runtime", "auth", "admin", "frontend"]
                     }
                 }
             }
@@ -225,8 +232,52 @@
             "additionalProperties": false
         },
         "contributionTraceability": {
-            "type": "object",
-            "description": "Traceability metadata linking declared contributions to their shipped runtime surfaces."
+            "oneOf": [
+                {
+                    "type": "object",
+                    "description": "Traceability metadata linking declared contributions to their shipped runtime surfaces.",
+                    "additionalProperties": false,
+                    "properties": {
+                "deferredContributions": { "$ref": "#/$defs/stringList" },
+                "runtimeIntegrations": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "oneOf": [
+                            { "$ref": "#/$defs/stringList" },
+                            {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": ["event", "listener"],
+                                    "properties": {
+                                        "event": { "type": "string", "minLength": 1 },
+                                        "listener": { "type": "string", "minLength": 1 }
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                },
+                "contributions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["type", "key", "providerBucket"],
+                        "properties": {
+                            "type": { "type": "string" },
+                            "key": { "type": "string", "minLength": 1 },
+                            "class": { "type": "string", "minLength": 1 },
+                            "providerBucket": { "enum": ["metadata", "install", "runtime", "auth", "admin", "frontend"] }
+                        }
+                    }
+                }
+                    }
+                },
+                { "type": "array", "maxItems": 0 }
+            ]
         },
         "settings": {
             "$ref": "#/$defs/stringList"

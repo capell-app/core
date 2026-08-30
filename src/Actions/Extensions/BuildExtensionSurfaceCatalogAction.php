@@ -17,8 +17,10 @@ use Capell\Core\Contracts\Database\DatabaseQueryDialect;
 use Capell\Core\Contracts\Database\DatabaseSchemaDialect;
 use Capell\Core\Contracts\Extensions\ChecksExtensionHealth;
 use Capell\Core\Contracts\Extensions\ExtensionContribution;
+use Capell\Core\Contracts\Extensions\RecordsExtensionContributionReceipt;
 use Capell\Core\Contracts\Extensions\RegistersExtensionBlueprintSubject;
 use Capell\Core\Contracts\Extensions\RegistersExtensionOutboundEvent;
+use Capell\Core\Contracts\Extensions\RegistersExtensionPublicRenderData;
 use Capell\Core\Contracts\FrontendRouteReservationContributor;
 use Capell\Core\Contracts\Health\HealthCheck;
 use Capell\Core\Contracts\InteractionTargetCapabilityContributor;
@@ -32,11 +34,14 @@ use Capell\Core\Contracts\SiteSpec\SiteSpecApplier;
 use Capell\Core\Data\BlueprintSubjectDescriptorData;
 use Capell\Core\Data\Database\DatabaseIndexDefinition;
 use Capell\Core\Data\Database\SqlFragment;
+use Capell\Core\Data\Extensions\ExtensionContributionReceiptData;
+use Capell\Core\Data\Extensions\ExtensionOrderDiagnosticData;
 use Capell\Core\Data\Extensions\ExtensionSurfaceCatalogEntryData;
 use Capell\Core\Data\FrontendRouteReservationData;
 use Capell\Core\Data\Health\HealthCheckResultData;
 use Capell\Core\Data\Health\HealthReportData;
 use Capell\Core\Data\Manifest\ExtensionContributionData;
+use Capell\Core\Data\Manifest\ExtensionContributionTraceabilityData;
 use Capell\Core\Data\Metrics\MetricCollectionResultData;
 use Capell\Core\Data\Metrics\MetricDefinitionData;
 use Capell\Core\Data\Metrics\MetricGovernanceData;
@@ -88,6 +93,8 @@ use Capell\Core\Facades\CapellCore;
 use Capell\Core\Facades\CapellDatabase;
 use Capell\Core\Support\BlueprintSubjectRegistry;
 use Capell\Core\Support\Database\DatabasePlatformRegistry;
+use Capell\Core\Support\Extensions\ExtensionOrderResolver;
+use Capell\Core\Support\Extensions\ExtensionPosition;
 use Capell\Core\Support\Health\HealthCheckRegistry;
 use Capell\Core\Support\OutboundEventRegistry;
 use Capell\Core\Support\ProjectBuild\ProjectBuildArtifactHandlerRegistry;
@@ -140,6 +147,7 @@ final class BuildExtensionSurfaceCatalogAction
             $this->entry('core.contract.extension-contribution', 'contract', ExtensionContribution::class, ExtensionSurfaceStability::Stable, 'Core contribution boundary.', 'core.extension-contribution'),
             $this->entry('core.contract.blueprint-subject', 'contract', RegistersExtensionBlueprintSubject::class, ExtensionSurfaceStability::Experimental, 'Package-owned blueprint subject contribution boundary.'),
             $this->entry('core.contract.outbound-event', 'contract', RegistersExtensionOutboundEvent::class, ExtensionSurfaceStability::Experimental, 'Package-owned outbound event contribution boundary.'),
+            $this->entry('core.contract.public-render-data', 'contract', RegistersExtensionPublicRenderData::class, ExtensionSurfaceStability::Experimental, 'Package-owned public render-data contribution marker.'),
             $this->entry('core.dto.blueprint-subject-descriptor', 'dto', BlueprintSubjectDescriptorData::class, ExtensionSurfaceStability::Experimental, 'Typed blueprint subject metadata.'),
             $this->entry('core.registry.blueprint-subject', 'registry', BlueprintSubjectRegistry::class, ExtensionSurfaceStability::Experimental, 'Runtime blueprint subject registry.'),
             $this->entry('core.dto.outbound-event-definition', 'dto', OutboundEventDefinitionData::class, ExtensionSurfaceStability::Experimental, 'Typed outbound event definition.'),
@@ -184,6 +192,12 @@ final class BuildExtensionSurfaceCatalogAction
             $this->entry('core.dto.metric-scope', 'dto', MetricScopeData::class, ExtensionSurfaceStability::Experimental, 'Portable metric scope.'),
             $this->entry('core.dto.metric-semantics', 'dto', MetricSemanticsData::class, ExtensionSurfaceStability::Experimental, 'Metric aggregation and gap semantics.'),
             $this->entry('core.dto.metric-value', 'dto', MetricValueData::class, ExtensionSurfaceStability::Experimental, 'Lossless metric numeric value.'),
+            $this->entry('core.contract.extension-contribution-receipt', 'contract', RecordsExtensionContributionReceipt::class, ExtensionSurfaceStability::Stable, 'Neutral runtime contribution receipt boundary.', 'core.extension-contribution-receipt'),
+            $this->entry('core.dto.extension-contribution-receipt', 'dto', ExtensionContributionReceiptData::class, ExtensionSurfaceStability::Stable, 'Typed runtime contribution receipt.', 'core.extension-contribution-receipt'),
+            $this->entry('core.dto.extension-contribution-traceability', 'dto', ExtensionContributionTraceabilityData::class, ExtensionSurfaceStability::Stable, 'Typed manifest runtime traceability envelope.', 'core.extension-contribution-traceability'),
+            $this->entry('core.dto.extension-order-diagnostic', 'dto', ExtensionOrderDiagnosticData::class, ExtensionSurfaceStability::Experimental, 'Structured ordering fallback diagnostic.'),
+            $this->entry('core.dto.extension-position', 'value-object', ExtensionPosition::class, ExtensionSurfaceStability::Experimental, 'Filament-neutral relative extension position.'),
+            $this->entry('core.registry.extension-order-resolver', 'registry', ExtensionOrderResolver::class, ExtensionSurfaceStability::Experimental, 'Deterministic shared extension ordering resolver.'),
             $this->entry('core.dto.project-build-artifact-reference', 'dto', ProjectBuildArtifactReferenceData::class, ExtensionSurfaceStability::Stable, 'Typed portable project build artifact reference.', 'core.project-build-manifest-data'),
             $this->entry('core.dto.project-build-compatibility', 'dto', ProjectBuildCompatibilityData::class, ExtensionSurfaceStability::Stable, 'Typed portable project build compatibility requirements.', 'core.project-build-manifest-data'),
             $this->entry('core.dto.project-build-installed-package', 'dto', ProjectBuildInstalledPackageData::class, ExtensionSurfaceStability::Stable, 'Verified installed package release evidence for project build consumers.', 'core.project-build-manifest-install'),
@@ -232,18 +246,44 @@ final class BuildExtensionSurfaceCatalogAction
             $this->entry('core.tag.database-platform', 'tagged-service', DatabasePlatform::TAG, ExtensionSurfaceStability::Experimental, 'Container tag for database platform adapters.'),
             $this->entry('core.config.roles-admin', 'config', 'capell.roles.admin', ExtensionSurfaceStability::Experimental, 'Configured administrator role name.'),
             $this->entry('admin.contract.admin-tool-item', 'contract', 'Capell\\Admin\\Contracts\\AdminTools\\AdminToolItem', ExtensionSurfaceStability::Experimental, 'Typed admin header tool contribution boundary.', owner: 'capell-app/admin'),
+            $this->entry('admin.contract.admin-zone-contribution', 'contract', 'Capell\\Admin\\Contracts\\AdminZoneContribution', ExtensionSurfaceStability::Stable, 'Typed stable Admin zone contribution boundary.', 'admin.admin-zone-registry', owner: 'capell-app/admin'),
+            $this->entry('admin.dto.admin-zone-context', 'dto', 'Capell\\Admin\\Data\\AdminZoneContextData', ExtensionSurfaceStability::Stable, 'Explicit Admin zone render context.', 'admin.admin-zone-registry', owner: 'capell-app/admin'),
+            $this->entry('admin.dto.admin-zone-contribution', 'dto', 'Capell\\Admin\\Data\\AdminZoneContributionData', ExtensionSurfaceStability::Stable, 'Owner-aware typed Admin zone contribution.', 'admin.admin-zone-registry', owner: 'capell-app/admin'),
+            $this->entry('admin.enum.admin-zone', 'enum', 'Capell\\Admin\\Enums\\AdminZone', ExtensionSurfaceStability::Stable, 'Stable Admin zone vocabulary.', 'admin.admin-zone-registry', owner: 'capell-app/admin'),
+            $this->entry('admin.registry.admin-zone', 'registry', 'Capell\\Admin\\Support\\AdminZoneRegistry', ExtensionSurfaceStability::Stable, 'Deterministic, permission-aware Admin zone composition.', 'admin.admin-zone-registry', owner: 'capell-app/admin'),
+            $this->entry('admin.registrar.admin-zone', 'registrar', 'Capell\\Admin\\Support\\Bridges\\AdminBridgeRegistrar', ExtensionSurfaceStability::Stable, 'Registers package contributions to stable Admin zones.', 'admin.admin-zone-registrar', owner: 'capell-app/admin'),
             $this->entry('admin.registrar.workspace', 'registrar', 'Capell\\Admin\\Support\\Bridges\\AdminBridgeRegistrar', ExtensionSurfaceStability::Stable, 'Registers permission-filtered role workspace tools from an Admin bridge.', 'admin.bridge-registrar-workspace', owner: 'capell-app/admin'),
             $this->entry('admin.render-hook.navigation-after', 'render-hook', 'panels::sidebar.nav.end', ExtensionSurfaceStability::Experimental, 'Admin navigation contribution hook.', owner: 'capell-app/admin'),
+            $this->entry('admin.registry.surface-contribution', 'registry', 'Capell\\Admin\\Support\\AdminSurfaceContributionRegistry', ExtensionSurfaceStability::Experimental, 'Owner-aware ordered Admin surface contributions.', owner: 'capell-app/admin'),
             $this->entry('admin.tag.admin-tool-item', 'tagged-service', 'capell-admin:admin-tool-items', ExtensionSurfaceStability::Experimental, 'Container tag for admin header tool contributions.', owner: 'capell-app/admin'),
             $this->entry('marketplace.contract.composer-change-publisher', 'contract', 'Capell\\Marketplace\\Contracts\\MarketplaceComposerChangePublisher', ExtensionSurfaceStability::Experimental, 'Typed optional Composer change publication boundary.', owner: 'capell-app/marketplace'),
             $this->entry('marketplace.dto.composer-publication-request', 'dto', 'Capell\\Marketplace\\Data\\MarketplaceComposerPublicationRequestData', ExtensionSurfaceStability::Experimental, 'Typed Composer publication request data.', owner: 'capell-app/marketplace'),
             $this->entry('marketplace.dto.composer-publication-result', 'dto', 'Capell\\Marketplace\\Data\\MarketplaceComposerPublicationResultData', ExtensionSurfaceStability::Experimental, 'Typed Composer publication result data.', owner: 'capell-app/marketplace'),
             $this->entry('marketplace.tag.composer-change-publisher', 'tagged-service', 'capell.marketplace.composer-change-publisher', ExtensionSurfaceStability::Experimental, 'Container tag for optional Composer change publishers.', owner: 'capell-app/marketplace'),
-            $this->entry('core.testing.extension-harness', 'testing', ExtensionTestHarness::class, ExtensionSurfaceStability::Stable, 'Single-package manifest and contribution assertions.', 'core.extension-test-harness'),
+            $this->entry(
+                'core.testing.extension-harness',
+                'testing',
+                ExtensionTestHarness::class,
+                ExtensionSurfaceStability::Stable,
+                'Manifest assertions plus real provider-bucket and receipt conformance checks.',
+                'core.extension-test-harness',
+                contractTestReferences: [
+                    'https://github.com/capell-app/capell/blob/b052f23730ac6dcd3bf6a7470a4e95c12f06b443/tests/Feature/ExtensionConformanceTest.php#L24',
+                    'https://github.com/capell-app/capell/blob/b052f23730ac6dcd3bf6a7470a4e95c12f06b443/tests/Feature/ExtensionConformanceFailureTest.php#L26',
+                ],
+            ),
             $this->entry('core.schema.project-build-manifest-v1', 'schema', ProjectBuildManifestSchema::class, ExtensionSurfaceStability::Experimental, 'Closed JSON Schema for portable project build manifests.'),
             $this->entry('core.internal.registry-builder', 'internal', BuildExtensionContractRegistryAction::class, ExtensionSurfaceStability::Internal, 'Internal executable contribution index.'),
             $this->entry('core.internal.project-build-manifest-migration', 'internal', ProjectBuildManifestMigration::class, ExtensionSurfaceStability::Internal, 'Core-owned portable manifest migration boundary.'),
             $this->entry('frontend.contract.component-contributor', 'contract', 'Capell\\Frontend\\Contracts\\FrontendComponentContributor', ExtensionSurfaceStability::Experimental, 'Typed frontend component contribution boundary.', owner: 'capell-app/frontend'),
+            $this->entry('frontend.contract.public-render-data-contributor', 'contract', 'Capell\\Frontend\\Contracts\\PublicRenderDataContributor', ExtensionSurfaceStability::Experimental, 'Typed public render-data contribution boundary.', owner: 'capell-app/frontend'),
+            $this->entry('frontend.dto.public-render-data-contribution', 'dto', 'Capell\\Frontend\\Data\\PublicRenderDataContributionData', ExtensionSurfaceStability::Experimental, 'Validated public render-data value.', owner: 'capell-app/frontend'),
+            $this->entry('frontend.dto.public-render-data-contribution-metadata', 'dto', 'Capell\\Frontend\\Data\\PublicRenderDataContributionMetadataData', ExtensionSurfaceStability::Experimental, 'Cheap public render-data fingerprint and dependency metadata.', owner: 'capell-app/frontend'),
+            $this->entry('frontend.dto.public-render-data-cache-dependency', 'dto', 'Capell\\Frontend\\Data\\PublicRenderDataCacheDependencyData', ExtensionSurfaceStability::Experimental, 'Typed public render-data model dependency.', owner: 'capell-app/frontend'),
+            $this->entry('frontend.registry.public-render-data-contributor', 'registry', 'Capell\\Frontend\\Support\\Render\\PublicRenderDataContributorRegistry', ExtensionSurfaceStability::Experimental, 'Deterministic public render-data contributor composition.', owner: 'capell-app/frontend'),
+            $this->entry('frontend.registry.public-render-data-cache-dependency', 'registry', 'Capell\\Frontend\\Support\\Cache\\PublicRenderDataCacheDependencyRegistry', ExtensionSurfaceStability::Experimental, 'Host-scoped public render-data cache dependency index.', owner: 'capell-app/frontend'),
+            $this->entry('frontend.registry.render-hook', 'registry', 'Capell\\Frontend\\Support\\Render\\RenderHookRegistry', ExtensionSurfaceStability::Experimental, 'Owner-aware ordered Frontend render hooks.', owner: 'capell-app/frontend'),
+            $this->entry('frontend.tag.public-render-data-contributor', 'tagged-service', 'capell.frontend.public-render-data-contributor', ExtensionSurfaceStability::Experimental, 'Container tag for public render-data contributors.', owner: 'capell-app/frontend'),
             $this->entry('frontend.contract.widget-resource-usage-contributor', 'contract', 'Capell\\Frontend\\Contracts\\FrontendWidgetResourceUsageContributor', ExtensionSurfaceStability::Experimental, 'Typed widget resource usage contribution boundary.', owner: 'capell-app/frontend'),
             $this->entry('frontend.dto.component-contribution', 'dto', 'Capell\\Frontend\\Data\\FrontendComponentContributionData', ExtensionSurfaceStability::Experimental, 'Named component contribution for a frontend runtime target.', owner: 'capell-app/frontend'),
             $this->entry('frontend.dto.package-dependency', 'dto', 'Capell\\Frontend\\Data\\Assets\\FrontendPackageDependencyData', ExtensionSurfaceStability::Experimental, 'Typed frontend package dependency declaration.', owner: 'capell-app/frontend'),
@@ -256,6 +296,7 @@ final class BuildExtensionSurfaceCatalogAction
         ];
     }
 
+    /** @param list<string> $contractTestReferences */
     private function entry(
         string $id,
         string $kind,
@@ -264,6 +305,7 @@ final class BuildExtensionSurfaceCatalogAction
         string $summary,
         ?string $contractTestId = null,
         string $owner = 'capell-app/core',
+        array $contractTestReferences = [],
     ): ExtensionSurfaceCatalogEntryData {
         return new ExtensionSurfaceCatalogEntryData(
             id: $id,
@@ -274,6 +316,7 @@ final class BuildExtensionSurfaceCatalogAction
             introducedVersion: '1.0.0',
             summary: $summary,
             contractTestId: $contractTestId,
+            contractTestReferences: $contractTestReferences,
         );
     }
 }
