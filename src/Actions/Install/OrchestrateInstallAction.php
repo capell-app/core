@@ -7,7 +7,9 @@ namespace Capell\Core\Actions\Install;
 use Capell\Core\Contracts\InstallOrchestrationHost;
 use Capell\Core\Contracts\ProgressReporter;
 use Capell\Core\Data\Install\InstallOrchestrationData;
+use Capell\Core\Data\Install\InstallRunResultData;
 use Capell\Core\Data\InstallInputData;
+use Capell\Core\Support\Install\InstallPlan;
 use Lorisleiva\Actions\Concerns\AsFake;
 use Lorisleiva\Actions\Concerns\AsObject;
 
@@ -34,11 +36,16 @@ final class OrchestrateInstallAction
             $host->outputPlan($inputData);
         }
 
-        $this->runInstall->handle($inputData, $reporter);
+        $result = $this->runInstall->runWithResult($inputData, $reporter);
         $host->upgradeFilament();
 
         if ($orchestration->runNpmBuild) {
             $host->buildFrontendAssets();
+            $result = new InstallRunResultData(
+                selectedPackages: $result->selectedPackages,
+                completedSteps: array_values(array_unique([...$result->completedSteps, InstallPlan::STEP_REBUILD_RESOURCES])),
+                doctorStatus: $result->doctorStatus,
+            );
         }
 
         if ($orchestration->removeInstaller) {
@@ -51,6 +58,6 @@ final class OrchestrateInstallAction
 
         $this->clearCaches->handle($cachesToClear, $reporter);
         $host->reportManualChanges();
-        $host->finalizeInstall($inputData, BuildInstallRunResultAction::run($inputData));
+        $host->finalizeInstall($inputData, $result);
     }
 }

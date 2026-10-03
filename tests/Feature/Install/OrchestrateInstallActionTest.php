@@ -10,6 +10,7 @@ use Capell\Core\Contracts\ProgressReporter;
 use Capell\Core\Data\Install\InstallOrchestrationData;
 use Capell\Core\Data\Install\InstallRunResultData;
 use Capell\Core\Data\InstallInputData;
+use Capell\Core\Support\Install\InstallPlan;
 use Capell\Core\Support\Install\NullProgressReporter;
 
 it('coordinates the complete console install sequence through a presentation host', function (): void {
@@ -30,45 +31,52 @@ it('coordinates the complete console install sequence through a presentation hos
         /** @param array<int, string> $calls */
         public function __construct(private array &$calls) {}
 
+        #[Override]
         public function prepareApplication(InstallInputData $inputData, ProgressReporter $reporter): void
         {
             $this->calls[] = 'prepare';
         }
 
+        #[Override]
         public function outputPlan(InstallInputData $inputData): void
         {
             $this->calls[] = 'plan';
         }
 
+        #[Override]
         public function upgradeFilament(): void
         {
             $this->calls[] = 'filament';
         }
 
+        #[Override]
         public function buildFrontendAssets(): void
         {
             $this->calls[] = 'npm';
         }
 
+        #[Override]
         public function removeInstaller(): void
         {
             $this->calls[] = 'remove';
         }
 
+        #[Override]
         public function reportManualChanges(): void
         {
             $this->calls[] = 'manual';
         }
 
+        #[Override]
         public function finalizeInstall(InstallInputData $inputData, InstallRunResultData $result): void
         {
-            expect($result->doctorStatus)->toBe('passed');
+            expect($result->doctorStatus)->toBe('passed')->and($result->completedSteps)->toBe(['install-package:vendor/dependency', InstallPlan::STEP_REBUILD_RESOURCES]);
             $this->calls[] = 'finalize';
         }
     };
 
     $runInstall = Mockery::mock(RunInstallAction::class);
-    $runInstall->shouldReceive('handle')->once()->with($inputData, $reporter);
+    $runInstall->shouldReceive('runWithResult')->once()->with($inputData, $reporter)->andReturn(new InstallRunResultData(selectedPackages: [], completedSteps: ['install-package:vendor/dependency'], doctorStatus: 'passed'));
     $clearCaches = Mockery::mock(ClearCachesAction::class);
     $clearCaches->shouldReceive('handle')->once()->with(['all'], $reporter);
     runBoundAction(
@@ -115,11 +123,11 @@ it('skips optional console operations when they were not requested', function ()
         ->once()
         ->with(
             $inputData,
-            Mockery::on(fn (InstallRunResultData $result): bool => $result->doctorStatus === 'passed'),
+            Mockery::on(fn (InstallRunResultData $result): bool => $result->doctorStatus === 'passed' && $result->completedSteps === ['install-package:vendor/dependency']),
         );
 
     $runInstall = Mockery::mock(RunInstallAction::class);
-    $runInstall->shouldReceive('handle')->once()->with($inputData, $reporter);
+    $runInstall->shouldReceive('runWithResult')->once()->with($inputData, $reporter)->andReturn(new InstallRunResultData(selectedPackages: [], completedSteps: ['install-package:vendor/dependency'], doctorStatus: 'passed'));
     $clearCaches = Mockery::mock(ClearCachesAction::class);
     $clearCaches->shouldReceive('handle')->once()->with(['packages'], $reporter);
     runBoundAction(
@@ -135,4 +143,29 @@ it('skips optional console operations when they were not requested', function ()
         $reporter,
         $host,
     );
+});
+
+it('withholds finalisation when an explicitly requested frontend build fails', function (): void {
+    $input = new InstallInputData(siteUrl: 'https://example.test', packages: ['capell-app/frontend'], languages: ['en'], demoContent: false, cachesToClear: [], generateSitemap: false, generateStaticSite: false);
+    $reporter = new NullProgressReporter;
+    $host = Mockery::mock(InstallOrchestrationHost::class);
+    $host->shouldReceive('prepareApplication')->once()->with($input, $reporter);
+    $host->shouldReceive('upgradeFilament')->once();
+    $host->shouldReceive('buildFrontendAssets')->once()->andThrow(new RuntimeException('Frontend build failed'));
+    $host->shouldNotReceive('finalizeInstall');
+    $runInstall = Mockery::mock(RunInstallAction::class);
+    $runInstall->shouldReceive('runWithResult')->once()->with($input, $reporter)->andReturn(new InstallRunResultData(['capell-app/frontend'], [], 'passed'));
+    $clearCaches = Mockery::mock(ClearCachesAction::class);
+    $clearCaches->shouldNotReceive('handle');
+
+    expect(function () use ($runInstall, $clearCaches, $input, $reporter, $host): void {
+        runBoundAction(
+            OrchestrateInstallAction::class,
+            new OrchestrateInstallAction($runInstall, $clearCaches),
+            $input,
+            new InstallOrchestrationData(outputPlan: false, runNpmBuild: true, removeInstaller: false, cachesToClear: []),
+            $reporter,
+            $host,
+        );
+    })->toThrow(RuntimeException::class, 'Frontend build failed');
 });

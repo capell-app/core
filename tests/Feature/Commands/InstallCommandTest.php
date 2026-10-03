@@ -2,8 +2,11 @@
 
 declare(strict_types=1);
 
+use Capell\Core\Actions\Install\BuildInstallRunResultAction;
 use Capell\Core\Actions\Install\ClearCachesAction;
 use Capell\Core\Actions\Install\RunInstallAction;
+use Capell\Core\Data\Install\InstallRunResultData;
+use Capell\Core\Data\InstallInputData;
 use Capell\Core\Enums\PackageScopeEnum;
 use Capell\Core\Enums\PackageTypeEnum;
 use Capell\Core\Events\CapellInstalled;
@@ -1991,6 +1994,10 @@ it('can run an npm build after installing a frontend package', function (): void
     markInstallTestPackageAsFrontend('capell-app/frontend');
     $fake = bindFakeRunInstallAction();
 
+    $dependencyProcess = Mockery::mock();
+    Process::shouldReceive('timeout')->with(300)->once()->andReturn($dependencyProcess);
+    $dependencyProcess->shouldReceive('run')->with('npm install')->once()->andReturn(installCommandFakeProcessResult(true));
+
     $pendingProcess = Mockery::mock();
 
     Process::shouldReceive('timeout')
@@ -2027,6 +2034,10 @@ it('fails instead of reporting a completed install when the requested npm build 
     setupInstallTest(['capell-app/frontend']);
     markInstallTestPackageAsFrontend('capell-app/frontend');
     $fake = bindFakeRunInstallAction();
+
+    $dependencyProcess = Mockery::mock();
+    Process::shouldReceive('timeout')->with(300)->once()->andReturn($dependencyProcess);
+    $dependencyProcess->shouldReceive('run')->with('npm install')->once()->andReturn(installCommandFakeProcessResult(true));
 
     $pendingProcess = Mockery::mock();
 
@@ -2125,12 +2136,13 @@ it('asks for package selection during interactive fresh demo installs', function
 
     $capturedInput = null;
 
-    RunInstallAction::shouldRun()
+    RunInstallAction::mock()
+        ->shouldReceive('runWithResult')
         ->once()
-        ->withArgs(function ($inputData) use (&$capturedInput): bool {
+        ->andReturnUsing(function (InstallInputData $inputData) use (&$capturedInput): InstallRunResultData {
             $capturedInput = $inputData;
 
-            return true;
+            return BuildInstallRunResultAction::run($inputData);
         });
 
     ClearCachesAction::shouldRun()
@@ -2151,6 +2163,8 @@ it('asks for package selection during interactive fresh demo installs', function
             'capell-app/demo-kit',
         ])
         ->assertExitCode(Command::SUCCESS);
+
+    $capturedInput = expectPresent($capturedInput);
 
     expect($capturedInput)->not()->toBeNull()
         ->and($capturedInput->freshInstall)->toBeTrue()
@@ -2181,12 +2195,13 @@ it('can orchestrate the fresh demo shortcut for every package without post-insta
     Log::spy();
     $capturedInput = null;
 
-    RunInstallAction::shouldRun()
+    RunInstallAction::mock()
+        ->shouldReceive('runWithResult')
         ->once()
-        ->withArgs(function ($inputData) use (&$capturedInput): bool {
+        ->andReturnUsing(function (InstallInputData $inputData) use (&$capturedInput): InstallRunResultData {
             $capturedInput = $inputData;
 
-            return true;
+            return BuildInstallRunResultAction::run($inputData);
         });
 
     ClearCachesAction::shouldRun()
@@ -2206,14 +2221,17 @@ it('can orchestrate the fresh demo shortcut for every package without post-insta
         ->expectsConfirmation('Warning: this will delete all your data. Are you sure?', 'yes')
         ->assertExitCode(Command::SUCCESS);
 
+    $capturedInput = expectPresent($capturedInput);
+    $newUser = expectPresent($capturedInput->newUser);
+
     expect($capturedInput)->not()->toBeNull()
         ->and($capturedInput->freshInstall)->toBeTrue()
         ->and($capturedInput->seedDatabase)->toBeFalse()
         ->and($capturedInput->demoContent)->toBeTrue()
         ->and($capturedInput->siteUrl)->toBe('https://demo.example.test')
         ->and($capturedInput->newUser)->not()->toBeNull()
-        ->and($capturedInput->newUser->name)->toBe('Capell Admin')
-        ->and($capturedInput->newUser->email)->toBe('admin@example.test')
+        ->and($newUser->name)->toBe('Capell Admin')
+        ->and($newUser->email)->toBe('admin@example.test')
         ->and($capturedInput->selectedThemeKey)->toBe('default')
         ->and($capturedInput->installDeveloperTooling)->toBeFalse()
         ->and($capturedInput->packages)->toContain(
