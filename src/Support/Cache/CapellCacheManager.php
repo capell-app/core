@@ -18,6 +18,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use LogicException;
+use RuntimeException;
 use Throwable;
 
 final class CapellCacheManager
@@ -250,6 +251,21 @@ final class CapellCacheManager
         $this->getCacheInstance()->forget($normalizedKey);
     }
 
+    /** @internal Lifecycle activation only; ordinary invalidation remains best-effort. */
+    public function removeCacheKeyOrFail(string $key): void
+    {
+        $normalizedKey = $this->normalizeCacheKey($key);
+        $cache = $this->getCacheInstance();
+        $existed = $cache->has($normalizedKey);
+
+        // A concurrent writer may repopulate the key after removal; a re-read cannot prove deletion failed.
+        unset($this->localCache[$normalizedKey]);
+        if ($existed && ! $cache->forget($normalizedKey)) {
+            throw new RuntimeException(__('capell-core::runtime-refresh.cache_key_removal_failed', ['key' => $key]));
+        }
+    }
+
+    /** Bulk invalidation is origin-wide: every port shares tags and generations. */
     public function flushCache(): void
     {
         $this->flushLocalCache();
@@ -535,7 +551,8 @@ final class CapellCacheManager
      * another's request when several hosts/apps share the store. Mirrors
      * App\Support\AppHostInvariant::configuredHostFingerprint() in the
      * consuming app, without depending on it — Core has no dependency on
-     * app-layer classes.
+     * app-layer classes. Standard ports retain the existing fingerprint;
+     * non-standard request origins need separate entries for origin-bound HTML.
      */
     private function hostFingerprint(): string
     {
@@ -547,6 +564,8 @@ final class CapellCacheManager
         }
 
         $host = rtrim(strtolower(trim($host)), '.');
+
+        $host .= CacheOrigin::discriminator();
 
         return substr(hash('xxh128', $host), 0, 8);
     }
@@ -570,6 +589,8 @@ final class CapellCacheManager
         return $generation;
     }
 
+    // Generation keys intentionally omit the origin discriminator: safe
+    // over-invalidation across ports prevents stale content after bulk purges.
     private function cacheInvalidationPatternGenerationKey(string $pattern): string
     {
         return 'capell.cache.pattern-generation.' . hash('sha256', $pattern);

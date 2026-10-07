@@ -6,19 +6,22 @@ namespace Capell\Core\Actions;
 
 use Capell\Core\Actions\Install\PublishPackageMigrationsAction;
 use Capell\Core\Actions\Install\RunMigrationsAction;
+use Capell\Core\Actions\RuntimeRefresh\RefreshInstalledPackageRuntimeAction;
+use Capell\Core\Actions\RuntimeRefresh\RestartQueueWorkersAction;
 use Capell\Core\Contracts\ProgressReporter;
 use Capell\Core\Data\PackageData;
 use Capell\Core\Enums\ListenerEnum;
 use Capell\Core\Events\PackageInstalled;
 use Capell\Core\Facades\CapellCore;
+use Capell\Core\Support\Components\ComponentRegistry;
 use Capell\Core\Support\Install\NullProgressReporter;
+use Capell\Core\Support\Packages\InstalledRuntimeLifecycle;
 use Capell\Core\Support\Packages\PackageLifecycleRunner;
 use Capell\Core\Support\Packages\PackageSurfaceRegistrar;
 use Exception;
 use Illuminate\Support\Facades\Event;
 use Lorisleiva\Actions\Concerns\AsFake;
 use Lorisleiva\Actions\Concerns\AsObject;
-use Spatie\LaravelPackageTools\PackageServiceProvider;
 use Throwable;
 
 /**
@@ -38,6 +41,22 @@ class InstallPackageAction
         ?ProgressReporter $reporter = null,
         bool $allowLegacyCommand = true,
         bool $freshLifecycleProcess = false,
+    ): void {
+        resolve(InstalledRuntimeLifecycle::class)->assertCanActivate($package->name);
+        self::install($package, $arguments, $reporter, $allowLegacyCommand, $freshLifecycleProcess);
+        RestartQueueWorkersAction::run();
+        if (config('capell.multi_node', false) === true || is_string(config('octane.server'))) {
+            $reporter?->report(__('capell-core::runtime-refresh.retained_reload_required'));
+        }
+    }
+
+    /** @param array<string, mixed> $arguments */
+    private static function install(
+        PackageData $package,
+        array $arguments,
+        ?ProgressReporter $reporter,
+        bool $allowLegacyCommand,
+        bool $freshLifecycleProcess,
     ): void {
         $name = $package->name;
         $reporter ??= new NullProgressReporter;
@@ -100,7 +119,7 @@ class InstallPackageAction
             throw $throwable;
         }
 
-        CapellCore::clearCachedComponents();
+        resolve(ComponentRegistry::class)->clearCachedComponentsOrFail();
         CapellCore::subscriberManager()->notifySubscribers(ListenerEnum::PackageInstalled, $package);
         Event::dispatch(new PackageInstalled($package));
     }
@@ -157,7 +176,7 @@ class InstallPackageAction
                     continue;
                 }
 
-                self::handle($member, $arguments, $reporter, $allowLegacyCommand, $freshLifecycleProcess);
+                self::install($member, $arguments, $reporter, $allowLegacyCommand, $freshLifecycleProcess);
                 $newlyInstalled[] = $member;
             }
         } catch (Throwable $throwable) {
@@ -171,21 +190,6 @@ class InstallPackageAction
 
     private static function registerInstalledPackageProviders(PackageData $package): void
     {
-        foreach (['auth', 'runtime', 'admin', 'frontend'] as $context) {
-            foreach ($package->getProviderClasses($context) as $providerClass) {
-                app()->register($providerClass);
-                app()->getProvider($providerClass)?->callBootedCallbacks();
-            }
-        }
-
-        if ($package->serviceProviderClass === null) {
-            return;
-        }
-
-        $provider = app()->getProvider($package->serviceProviderClass);
-
-        if ($provider instanceof PackageServiceProvider) {
-            $provider->callBootedCallbacks();
-        }
+        RefreshInstalledPackageRuntimeAction::run($package);
     }
 }

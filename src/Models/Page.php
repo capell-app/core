@@ -9,7 +9,9 @@ use Aimeos\Nestedset\NodeTrait;
 use Bkwld\Cloner\Cloneable;
 use Capell\Core\Actions\GetPageUrlPathAction;
 use Capell\Core\Actions\Properties\ResolveAgentPropertyValuesAction;
+use Capell\Core\Actions\RecordPageDeletionCascadeAction;
 use Capell\Core\Actions\ResolveFirstPageByTypeAction;
+use Capell\Core\Actions\RestorePageCascadeRecordsAction;
 use Capell\Core\Actions\ValidatePageHierarchyAction;
 use Capell\Core\Concerns\HasCapellMedia;
 use Capell\Core\Concerns\WhenBootedShim;
@@ -36,12 +38,16 @@ use Capell\Core\Models\Concerns\HasPageOrdering;
 use Capell\Core\Models\Concerns\HasPublishDates;
 use Capell\Core\Models\Concerns\HasTranslations;
 use Capell\Core\Models\Concerns\HasUserstamps;
+use Capell\Core\Models\Concerns\PageNestedSet;
 use Capell\Core\Models\Contracts\Blueprintable;
 use Capell\Core\Models\Contracts\Publishable;
 use Capell\Core\Models\Contracts\Translatable;
 use Capell\Core\Models\Contracts\Userstampable;
 use Capell\Core\Models\Scopes\LanguagesOrderScope;
 use Capell\Core\Observers\PageObserver;
+use Capell\Core\Support\Activity\ActivityLogCompat;
+use Capell\Core\Support\Activity\LogOptions;
+use Capell\Core\Support\Activity\LogsActivity;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Database\Eloquent\Builder as BuilderContract;
 use Illuminate\Database\Eloquent\Attributes\ObservedBy;
@@ -60,9 +66,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User;
 use Illuminate\Support\Arr;
 use Override;
-use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Models\Activity;
-use Spatie\Activitylog\Traits\LogsActivity;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\MediaCollections\Models\Collections\MediaCollection;
 use Staudenmeir\EloquentJsonRelations\HasJsonRelationships;
@@ -245,8 +249,17 @@ class Page extends Model implements Blueprintable, DraftableContract, EventSourc
     use HasUserstamps;
     use IsEventSourced;
     use LogsActivity;
-    use NodeTrait;
-    use SoftDeletes;
+
+    // NodeTrait must remain directly used: NestedSet::isNode() checks non-recursive class_uses().
+    use NodeTrait {
+        NodeTrait::deleteDescendants as private deleteNestedSetDescendants;
+    }
+    use PageNestedSet {
+        PageNestedSet::bootNodeTrait insteadof NodeTrait;
+    }
+    use SoftDeletes {
+        restore as private restoreSoftDeletedPage;
+    }
     use WhenBootedShim;
 
     /**
@@ -275,6 +288,8 @@ class Page extends Model implements Blueprintable, DraftableContract, EventSourc
     ];
 
     protected static string $factory = PageFactory::class;
+
+    private bool $pageRestoreCascadePrepared = false;
 
     public static function hasPageHierarchy(): bool
     {
@@ -382,6 +397,38 @@ class Page extends Model implements Blueprintable, DraftableContract, EventSourc
         $pageUrl->setRelation('siteDomain', $matchingSiteDomain);
     }
 
+    #[Override]
+    public function delete(): ?bool
+    {
+        return $this->getConnection()->transaction(function (): ?bool {
+            $current = $this->newQuery()->withTrashed()->whereKey($this->getKey())->lockForUpdate()->first();
+            if (! $current instanceof self || (! $this->isForceDeleting() && $current->trashed())) {
+                return false;
+            }
+
+            // Bounds and deletion state may have changed since this instance was loaded.
+            $this->setRawAttributes($current->getAttributes(), sync: true);
+
+            return parent::delete();
+        });
+    }
+
+    public function restore(): bool
+    {
+        return RestorePageCascadeRecordsAction::run($this, $this->restoreCascadeMember(...));
+    }
+
+    /** Restore a Site member without consuming the Site's own deletion history. */
+    public function restoreForSite(): bool
+    {
+        return RestorePageCascadeRecordsAction::run($this, $this->restoreCascadeMember(...), true);
+    }
+
+    public function isPageRestoreCascadePrepared(): bool
+    {
+        return $this->pageRestoreCascadePrepared;
+    }
+
     /**
      * Replicate the page but drop the shared uuid so a fresh one is generated
      * on save. CopyOnWriteAction preserves the live uuid explicitly when it
@@ -399,21 +446,16 @@ class Page extends Model implements Blueprintable, DraftableContract, EventSourc
 
     public function getActivitylogOptions(): LogOptions
     {
-        return LogOptions::defaults()
-            ->useLogName('page')
-            ->logAll()
-            ->logExcept([
-                'updated_at',
-                'created_at',
-                'deleted_at',
-                '_lft',
-                '_rgt',
-                'created_by',
-                'updated_by',
-                'deleted_by',
-            ])
-            ->logOnlyDirty()
-            ->dontSubmitEmptyLogs();
+        return ActivityLogCompat::options('page', [
+            'updated_at',
+            'created_at',
+            'deleted_at',
+            '_lft',
+            '_rgt',
+            'created_by',
+            'updated_by',
+            'deleted_by',
+        ]);
     }
 
     /**
@@ -632,6 +674,15 @@ class Page extends Model implements Blueprintable, DraftableContract, EventSourc
             ->orderByDesc('version');
     }
 
+    protected function deleteDescendants(): void
+    {
+        if (! $this->isForceDeleting() && ! $this->trashed()) {
+            RecordPageDeletionCascadeAction::run($this);
+        }
+
+        $this->deleteNestedSetDescendants();
+    }
+
     /**
      * The effective content structure for this page.
      *
@@ -722,5 +773,15 @@ class Page extends Model implements Blueprintable, DraftableContract, EventSourc
             'visible_from' => 'datetime',
             'visible_until' => 'datetime',
         ];
+    }
+
+    private function restoreCascadeMember(self $member): bool
+    {
+        $member->pageRestoreCascadePrepared = true;
+        try {
+            return $member->restoreSoftDeletedPage();
+        } finally {
+            $member->pageRestoreCascadePrepared = false;
+        }
     }
 }
