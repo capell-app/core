@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Capell\Core\Support\Install;
 
+use Capell\Core\Actions\Install\BuildInstallFrontendAssetsAction;
+use Capell\Core\Actions\Install\CallArtisanCommandAction;
 use Capell\Core\Actions\Install\ClearCachesAction;
 use Capell\Core\Actions\Install\CreateAdditionalInstallUsersAction;
 use Capell\Core\Actions\Install\GenerateSitemapAction;
@@ -21,7 +23,6 @@ use Capell\Core\Actions\Install\RequireExtraPackagesAction;
 use Capell\Core\Actions\Install\ResolveInstallUserAction;
 use Capell\Core\Actions\Install\RunInstallPreflightChecksAction;
 use Capell\Core\Actions\Install\RunMigrationsAction;
-use Capell\Core\Actions\RunNpmBuildAction;
 use Capell\Core\Contracts\AdminPermissionSynchronizer;
 use Capell\Core\Data\PackageData;
 use Capell\Core\Enums\ExtensionStatusEnum;
@@ -384,7 +385,7 @@ final class InstallStepExecutor
 
         $state->reporter->step('Integrating Capell Admin with Filament panel…');
 
-        $exitCode = Artisan::call('capell:admin-setup', [
+        $result = CallArtisanCommandAction::run('capell:admin-setup', [
             '--integration-only' => true,
             '--panel' => $state->inputData->adminPanel,
             '--configurators' => $state->inputData->adminDiscoverSchemas === []
@@ -396,13 +397,13 @@ final class InstallStepExecutor
             '--force' => true,
         ]);
 
-        $output = trim(Artisan::output());
+        $output = $result->combinedOutput();
         if ($output !== '') {
             $state->reporter->report($output);
         }
 
-        if ($exitCode !== 0) {
-            throw new RuntimeException(sprintf("Command 'capell:admin-setup' failed with exit code %d.", $exitCode));
+        if ($result->exitCode !== 0) {
+            throw new RuntimeException(sprintf("Command 'capell:admin-setup' failed with exit code %d.", $result->exitCode));
         }
     }
 
@@ -431,11 +432,11 @@ final class InstallStepExecutor
         $state->reporter->step('Rebuilding frontend resources…');
 
         try {
-            RunNpmBuildAction::run();
+            BuildInstallFrontendAssetsAction::run($state->reporter);
             $state->reporter->report('✓ Frontend resources rebuilt');
         } catch (RuntimeException $runtimeException) {
             $state->reporter->error('⚠ Frontend resources were not rebuilt.');
-            $state->reporter->error('The installer tried to run npm but the build failed. Log in to the server and run npm install, then npm run build.');
+            $state->reporter->error(__('capell-core::install.recovery.build_failed'));
             $state->reporter->error($runtimeException->getMessage());
 
             throw $runtimeException;

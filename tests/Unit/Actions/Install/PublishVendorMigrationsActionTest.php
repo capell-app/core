@@ -153,13 +153,14 @@ it('normalizes a pending Spatie media migration to Capell canonical order', func
         $spatiePublishedMigrationPath = $migrationDirectory . '/2035_01_01_000000_create_media_table.php';
         $canonicalMigrationPath = $migrationDirectory . '/2026_05_10_190826_create_media_table.php';
 
-        File::put($spatiePublishedMigrationPath, "<?php\n\ndeclare(strict_types=1);\n");
+        $migrationContent = "<?php\n\ndeclare(strict_types=1);\n";
+        File::put($spatiePublishedMigrationPath, $migrationContent);
 
         PublishVendorMigrationsAction::run(new NullProgressReporter);
 
         expect(File::exists($spatiePublishedMigrationPath))->toBeFalse()
             ->and(File::exists($canonicalMigrationPath))->toBeTrue()
-            ->and(File::get($canonicalMigrationPath))->toContain('declare(strict_types=1)');
+            ->and(File::get($canonicalMigrationPath))->toBe($migrationContent);
     });
 });
 
@@ -335,4 +336,13 @@ it('publishes tag tables before package tag migrations run', function (): void {
             File::delete($stubPath);
         }
     }
+});
+
+it('does not borrow a missing stub from another installed version of a host vendor package', function (): void {
+    $relativePath = 'vendor/spatie/laravel-activitylog/database/migrations/add_event_column_to_activity_log_table.php.stub';
+    File::shouldReceive('exists')->once()->with(base_path($relativePath))->andReturn(false);
+    File::shouldReceive('isDirectory')->zeroOrMoreTimes()->with(base_path('vendor/spatie/laravel-activitylog'))->andReturn(true);
+
+    $method = new ReflectionMethod(PublishVendorMigrationsAction::class, 'resolveStubPath');
+    expect($method->invoke(new PublishVendorMigrationsAction, $relativePath))->toBeNull();
 });

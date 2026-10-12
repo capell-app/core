@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use Capell\Core\Console\Commands\Concerns\HasFrontendAssetsOption;
+use Capell\Core\Tests\Support\FrontendAssetsOptionTestCommand;
 use Illuminate\Console\Command;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
@@ -136,47 +136,8 @@ function frontendAssetsForOptionValue(mixed $assets, bool $interactive = false):
     $input = new ArrayInput([], $command->getDefinition());
     $input->setInteractive($interactive);
 
-    $inputProperty = new ReflectionProperty($command, 'input');
-    $inputProperty->setValue($command, $input);
+    $output = new BufferedOutput;
+    expect($command->run($input, $output))->toBe(Command::SUCCESS);
 
-    $outputProperty = new ReflectionProperty($command, 'output');
-    $outputProperty->setValue($command, new BufferedOutput);
-
-    return $command->frontendAssets();
-}
-
-final class FrontendAssetsOptionTestCommand extends Command
-{
-    use HasFrontendAssetsOption;
-
-    protected $signature = 'capell:test-frontend-assets-option';
-
-    protected $description = 'Test frontend asset option resolution.';
-
-    public function __construct(private readonly mixed $assets)
-    {
-        parent::__construct();
-    }
-
-    #[Override]
-    public function option($key = null)
-    {
-        if ($key === 'assets') {
-            return $this->assets;
-        }
-
-        return parent::option($key);
-    }
-
-    public function frontendAssets(): ?array
-    {
-        return $this->getFrontendAssets();
-    }
-
-    public function handle(): int
-    {
-        $this->line(json_encode($this->frontendAssets(), JSON_THROW_ON_ERROR));
-
-        return self::SUCCESS;
-    }
+    return json_decode(trim($output->fetch()), true, flags: JSON_THROW_ON_ERROR);
 }

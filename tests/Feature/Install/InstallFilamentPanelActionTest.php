@@ -10,6 +10,9 @@ use Capell\Core\Support\Process\ProcessFactoryInterface;
 use Capell\Core\Support\Runtime\RuntimeRoleCachePaths;
 use Capell\Core\Support\Runtime\RuntimeRoleProviderPolicy;
 use Capell\Core\Tests\Support\Install\RecordingInstallProgressReporter;
+use Capell\Tests\Support\GeneratedPhpFixture;
+use Capell\Tests\Support\TailwindFixture;
+use Filament\Panel;
 use Filament\PanelProvider;
 use Filament\PanelRegistry;
 use Illuminate\Container\Container;
@@ -18,6 +21,7 @@ use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
+use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Process\Process as SymfonyProcess;
 
 beforeEach(function (): void {
@@ -142,7 +146,7 @@ PHP);
     expect(File::get($providerPath))->toBe($providerContents);
 });
 
-it('reports when an existing filament panel is missing theme configuration', function (): void {
+it('configures the theme when an existing filament panel has no stylesheet', function (): void {
     File::ensureDirectoryExists(app_path('Providers/Filament'));
     File::put(app_path('Providers/Filament/FilamentInstallTestPanelProvider.php'), <<<'PHP'
 <?php
@@ -178,17 +182,17 @@ PHP);
 
     expect($reporter->lines)->toContain(
         '→ Filament admin panel already configured.',
-        '→ Filament panel theme is not configured. Add ->viteTheme(...) or another theme configuration to your panel provider.',
+        '→ Configured the compiled Filament admin theme.',
     );
 });
 
 it('runs filament install with panel scaffolding when no panel provider exists', function (): void {
     $kernel = Mockery::mock(ConsoleKernel::class);
-    $kernel->shouldReceive('all')->once()->andReturn(['filament:install' => true]);
+    $kernel->shouldReceive('all')->twice()->andReturn(['filament:install' => true]);
     $kernel->shouldReceive('call')->once()->with('filament:install', [
         '--panels' => true,
         '--no-interaction' => true,
-    ])->andReturnUsing(function (): int {
+    ], Mockery::type(BufferedOutput::class))->andReturnUsing(function (): int {
         File::ensureDirectoryExists(app_path('Providers/Filament'));
         File::put(app_path('Providers/Filament/FilamentInstallTestPanelProvider.php'), <<<'PHP'
 <?php
@@ -220,11 +224,13 @@ PHP);
 
     InstallFilamentPanelAction::run(new NullProgressReporter);
 
-    expect(resource_path('css/filament/admin/theme.css'))->toBeFile()
-        ->and(File::get(resource_path('css/filament/admin/theme.css')))
-        ->toContain("@import '../../../../vendor/filament/filament/resources/css/theme.css';")
-        ->toContain("@source '../../../../app/Filament/**/*';")
-        ->toContain("@source '../../../../resources/views/filament/**/*';")
+    File::ensureDirectoryExists(app_path('Filament'));
+    File::ensureDirectoryExists(resource_path('views/filament'));
+    File::put(app_path('Filament/ThemeFixture.php'), 'p-7');
+    File::put(resource_path('views/filament/theme-fixture.blade.php'), 'm-9');
+    $compiled = TailwindFixture::build(resource_path('css/filament/admin/theme.css'));
+    expect(preg_match('/\.p-7\s*\{/', $compiled))->toBe(1)
+        ->and(preg_match('/\.m-9\s*\{/', $compiled))->toBe(1)
         ->and(app()->getProvider('App\\Providers\\Filament\\FilamentInstallTestPanelProvider'))
         ->toBeInstanceOf(PanelProvider::class)
         ->and(resolve(PanelRegistry::class)->get('admin'))
@@ -237,11 +243,12 @@ it('rejects a failed filament install even when it leaves a partial panel provid
     bindFilamentPanelInstallProcessFactory(false, '', 'Panel scaffolding failed.', scaffoldPanel: false);
 
     $kernel = Mockery::mock(ConsoleKernel::class);
-    $kernel->shouldReceive('all')->once()->andReturn(['filament:install' => true]);
+    $kernel->shouldReceive('all')->twice()->andReturn(['filament:install' => true]);
     $kernel->shouldReceive('call')->once()->with('filament:install', [
         '--panels' => true,
         '--no-interaction' => true,
-    ])->andReturnUsing(function (): int {
+    ], Mockery::type(BufferedOutput::class))->andReturnUsing(function (string $command, array $arguments, BufferedOutput $output): int {
+        $output->writeln('Panel scaffolding stopped before completion.');
         File::ensureDirectoryExists(app_path('Providers/Filament'));
         File::put(app_path('Providers/Filament/PartialPanelProvider.php'), '<?php');
 
@@ -281,7 +288,7 @@ it('falls back to a fresh process when in-process filament install fails', funct
     bindFilamentPanelInstallProcessFactory();
 
     $kernel = Mockery::mock(ConsoleKernel::class);
-    $kernel->shouldReceive('all')->once()->andReturn(['filament:install' => true]);
+    $kernel->shouldReceive('all')->twice()->andReturn(['filament:install' => true]);
     $kernel->shouldReceive('call')->once()->andThrow(new RuntimeException('Filament command failed.'));
     $kernel->shouldReceive('output')->zeroOrMoreTimes()->andReturn('');
     $this->app->instance(ConsoleKernel::class, $kernel);
@@ -318,11 +325,11 @@ PHP;
     app()->instance(PanelRegistry::class, new PanelRegistry);
 
     $kernel = Mockery::mock(ConsoleKernel::class);
-    $kernel->shouldReceive('all')->once()->andReturn(['filament:install' => true]);
+    $kernel->shouldReceive('all')->twice()->andReturn(['filament:install' => true]);
     $kernel->shouldReceive('call')->once()->with('filament:install', [
         '--panels' => true,
         '--no-interaction' => true,
-    ])->andReturnUsing(function () use ($providerPath, $providerContents): never {
+    ], Mockery::type(BufferedOutput::class))->andReturnUsing(function () use ($providerPath, $providerContents): never {
         File::ensureDirectoryExists(dirname($providerPath));
         File::put($providerPath, $providerContents);
         InstallFilamentPanelAction::registerPanelProviders();
@@ -364,7 +371,7 @@ PHP;
     $reporter = new RecordingInstallProgressReporter;
     InstallFilamentPanelAction::run($reporter);
 
-    expect(File::get($providerPath))->toBe($providerContents)
+    expect(GeneratedPhpFixture::load($providerPath, PanelProvider::class, app())->panel(Panel::make())->getViteTheme())->toBe('resources/css/filament/admin/theme.css')
         ->and($recoveryCommand)->toBe([PHP_BINARY, 'artisan', 'filament:install', '--no-interaction'])
         ->and(resolve(PanelRegistry::class)->getDefault()->getId())->toBe('admin')
         ->and(resolve(PanelRegistry::class)->getDefault()->hasLogin())->toBeTrue()
@@ -474,3 +481,54 @@ PHP);
     expect(config('capell-test.panel_builds'))->toBe(1)
         ->and(resolve(PanelRegistry::class)->get('boot-registered'))->toBe($bootstrapPanel);
 });
+
+it('configures the compiled admin theme when panel colours are already configured', function (): void {
+    $providerPath = app_path('Providers/Filament/FilamentInstallTestPanelProvider.php');
+    File::ensureDirectoryExists(dirname($providerPath));
+    File::put($providerPath, <<<'PHP'
+<?php
+namespace App\Providers\Filament;
+use Filament\Panel;
+use Filament\PanelProvider;
+use Override;
+class FilamentInstallTestPanelProvider extends PanelProvider
+{
+    #[Override]
+    public function panel(Panel $panel): Panel
+    {
+        return $panel->id('admin')->colors(['primary' => 'amber']);
+    }
+}
+PHP);
+    $kernel = Mockery::mock(ConsoleKernel::class);
+    $kernel->shouldNotReceive('all');
+    $kernel->shouldNotReceive('call');
+    $kernel->shouldReceive('output')->zeroOrMoreTimes()->andReturn('');
+    app()->instance(ConsoleKernel::class, $kernel);
+    Artisan::clearResolvedInstances();
+
+    InstallFilamentPanelAction::run(new NullProgressReporter);
+    $firstPass = File::get($providerPath);
+    InstallFilamentPanelAction::run(new NullProgressReporter);
+
+    expect(GeneratedPhpFixture::load($providerPath, PanelProvider::class, app())->panel(Panel::make())->getViteTheme())->toBe('resources/css/filament/admin/theme.css');
+    expect(File::get($providerPath))->toBe($firstPass);
+    expect(File::exists(resource_path('css/filament/admin/theme.css')))->toBeTrue();
+});
+
+it('preserves explicit themes and customised panel methods', function (string $body, bool $expectsWarning): void {
+    $path = app_path('Providers/Filament/FilamentInstallTestPanelProvider.php');
+    File::ensureDirectoryExists(dirname($path));
+    $source = '<?php namespace App\\Providers\\Filament; class FilamentInstallTestPanelProvider { public function panel($panel) { ' . $body . ' } }';
+    File::put($path, $source);
+    $reporter = new RecordingInstallProgressReporter;
+
+    InstallFilamentPanelAction::run($reporter);
+
+    expect(File::get($path))->toBe($source);
+    expect(File::exists(resource_path('css/filament/admin/theme.css')))->toBeFalse();
+    expect(in_array('→ Filament panel theme is not configured. Add ->viteTheme(...) or another theme configuration to your panel provider.', $reporter->lines, true))->toBe($expectsWarning);
+})->with([
+    'explicit stylesheet' => ['return $panel->id("admin")->theme("custom.css");', false],
+    'customised method' => ['$panel->id("admin"); return $panel;', true],
+]);

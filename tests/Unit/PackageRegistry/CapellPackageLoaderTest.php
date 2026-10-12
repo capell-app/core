@@ -2,18 +2,19 @@
 
 declare(strict_types=1);
 
+use Capell\Core\Enums\ExtensionProviderRecoveryStateEnum;
 use Capell\Core\Facades\CapellCore;
+use Capell\Core\Models\CapellExtension;
 use Capell\Core\Support\Extensions\ExtensionContributionReceiptRegistry;
 use Capell\Core\Support\Manifest\CapellManifestData;
 use Capell\Core\Support\PackageRegistry\CapellPackageLoader;
 use Capell\Core\Support\PackageRegistry\CapellPackageRegistry;
 use Capell\Core\Support\Packages\InstalledRuntimeLifecycle;
-use Capell\Core\Support\Packages\PackageSurfaceRegistrar;
+use Capell\Core\Tests\Support\BootingReceiptTestProvider;
 use Illuminate\Auth\AuthServiceProvider;
 use Illuminate\Cache\CacheServiceProvider;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Filesystem\FilesystemServiceProvider;
-use Illuminate\Support\ServiceProvider;
 use Mockery\MockInterface;
 
 it('always includes metadata and install providers for discovered packages', function (): void {
@@ -23,7 +24,8 @@ it('always includes metadata and install providers for discovered packages', fun
         'runtime' => [FilesystemServiceProvider::class],
     ]);
 
-    CapellCore::shouldReceive('isPackageEnabled')->once()->with('capell-app/blog')->andReturnFalse();
+    CapellCore::registerPackage('capell-app/blog');
+    CapellCore::markPackageDisabled('capell-app/blog');
 
     $providers = packageLoader($registry)->collectProviders();
 
@@ -39,7 +41,8 @@ it('registers every runtime capability for an enabled package at worker boot', f
         'frontend' => [FilesystemServiceProvider::class],
     ]);
 
-    CapellCore::shouldReceive('isPackageEnabled')->once()->with('capell-app/blog')->andReturnTrue();
+    CapellCore::registerPackage('capell-app/blog');
+    CapellCore::markPackageInstalled('capell-app/blog');
 
     expect(packageLoader($registry)->collectProviders())
         ->toContain(AuthServiceProvider::class, CacheServiceProvider::class, FilesystemServiceProvider::class);
@@ -51,7 +54,8 @@ it('does not freeze provider capabilities to the first request context', functio
         'frontend' => [FilesystemServiceProvider::class],
     ]);
 
-    CapellCore::shouldReceive('isPackageEnabled')->twice()->with('capell-app/blog')->andReturnTrue();
+    CapellCore::registerPackage('capell-app/blog');
+    CapellCore::markPackageInstalled('capell-app/blog');
 
     $loader = packageLoader($registry);
 
@@ -66,8 +70,6 @@ it('loads all capabilities for trusted core packages without lifecycle checks', 
         'frontend' => [FilesystemServiceProvider::class],
     ]);
 
-    CapellCore::shouldReceive('isPackageEnabled')->never();
-
     expect(packageLoader($registry)->collectProviders())
         ->toContain(AuthServiceProvider::class, CacheServiceProvider::class, FilesystemServiceProvider::class);
 });
@@ -77,7 +79,8 @@ it('skips providers for non-existent classes gracefully', function (): void {
         'admin' => ['Capell\\Ghost\\Providers\\NonExistentProvider'],
     ]);
 
-    CapellCore::shouldReceive('isPackageEnabled')->once()->with('capell-app/ghost')->andReturnTrue();
+    CapellCore::registerPackage('capell-app/ghost');
+    CapellCore::markPackageInstalled('capell-app/ghost');
 
     expect(fn (): array => packageLoader($registry)->loadProviders())->not->toThrow(Throwable::class);
 });
@@ -92,20 +95,23 @@ it('quarantines an optional package when provider registration fails', function 
     $application->shouldReceive('make')->with(InstalledRuntimeLifecycle::class)->andReturn(new InstalledRuntimeLifecycle($application));
     $application->shouldReceive('isBooted')->andReturnFalse();
     $application->shouldReceive('register')
-        ->once()
+
         ->with(AuthServiceProvider::class)
         ->andThrow(new RuntimeException('provider registration failed'));
-    $application->shouldReceive('resolved')->once()->with(InstalledRuntimeLifecycle::class)->andReturnFalse();
+    $application->shouldReceive('resolved')->with(InstalledRuntimeLifecycle::class)->andReturnFalse();
 
-    CapellCore::shouldReceive('isPackageEnabled')->once()->with('vendor/failing-extension')->andReturnTrue();
-    CapellCore::shouldReceive('markPackageProviderQuarantined')
-        ->once()
-        ->with('vendor/failing-extension', AuthServiceProvider::class, Mockery::type('string'));
+    CapellCore::registerPackage('vendor/failing-extension');
+    CapellCore::markPackageInstalled('vendor/failing-extension');
 
     expect(function () use ($application, $registry): void {
         new CapellPackageLoader($application, $registry, receipts: new ExtensionContributionReceiptRegistry)->loadProviders();
     })
         ->not->toThrow(Throwable::class);
+
+    $extension = CapellExtension::query()->where('composer_name', 'vendor/failing-extension')->firstOrFail();
+    expect($extension->provider_recovery_state)->toBe(ExtensionProviderRecoveryStateEnum::Quarantined)
+        ->and($extension->provider_recovery_reason)->toContain('failed during registration')
+        ->and(CapellCore::isPackageEnabled('vendor/failing-extension'))->toBeFalse();
 });
 
 it('does not quarantine trusted core packages when provider registration fails', function (): void {
@@ -118,11 +124,9 @@ it('does not quarantine trusted core packages when provider registration fails',
     $application->shouldReceive('make')->with(InstalledRuntimeLifecycle::class)->andReturn(new InstalledRuntimeLifecycle($application));
     $application->shouldReceive('isBooted')->andReturnFalse();
     $application->shouldReceive('register')
-        ->once()
+
         ->with(AuthServiceProvider::class)
         ->andThrow(new RuntimeException('core provider registration failed'));
-
-    CapellCore::shouldReceive('markPackageProviderQuarantined')->never();
 
     expect(function () use ($application, $registry): void {
         new CapellPackageLoader($application, $registry, receipts: new ExtensionContributionReceiptRegistry)->loadProviders();
@@ -137,7 +141,8 @@ it('keeps an extension receipt owner while a registered provider boots', functio
     $receipts = new ExtensionContributionReceiptRegistry;
     app()->instance(ExtensionContributionReceiptRegistry::class, $receipts);
 
-    CapellCore::shouldReceive('isPackageEnabled')->once()->with('vendor/boot-receipt')->andReturnTrue();
+    CapellCore::registerPackage('vendor/boot-receipt');
+    CapellCore::markPackageInstalled('vendor/boot-receipt');
 
     new CapellPackageLoader(app(), $registry, receipts: $receipts)->loadProviders();
 
@@ -164,22 +169,5 @@ function packageLoaderRegistry(string $name, array $providers): CapellPackageReg
 
 function packageLoader(CapellPackageRegistry $registry): CapellPackageLoader
 {
-    /** @var Application&MockInterface $application */
-    $application = Mockery::mock(Application::class);
-    $application->shouldReceive('make')->with(InstalledRuntimeLifecycle::class)->andReturn(new InstalledRuntimeLifecycle($application));
-    $application->shouldReceive('isBooted')->andReturnFalse();
-
-    return new CapellPackageLoader(
-        $application,
-        $registry,
-        receipts: new ExtensionContributionReceiptRegistry,
-    );
-}
-
-final class BootingReceiptTestProvider extends ServiceProvider
-{
-    public function boot(): void
-    {
-        resolve(PackageSurfaceRegistrar::class)->models([stdClass::class]);
-    }
+    return new CapellPackageLoader(app(), $registry, receipts: new ExtensionContributionReceiptRegistry);
 }

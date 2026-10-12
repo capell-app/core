@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Capell\Core\Support\Packages;
 
+use Capell\Core\Actions\Packages\FindUnmetPackageRequirementsAction;
 use Capell\Core\Events\InstalledRuntimeRefreshed;
 use Capell\Core\Facades\CapellCore;
 use Capell\Core\Http\Middleware\EnsureInstalledRuntimeAvailable;
@@ -58,6 +59,9 @@ final class InstalledRuntimeLifecycle
     /** @var array<string, true> */
     private array $activatedPackages = [];
 
+    /** @var array<string, array<string, true>> */
+    private array $requirementSkips = [];
+
     /** @var WeakMap<Throwable, true> */
     private WeakMap $reported;
 
@@ -79,6 +83,8 @@ final class InstalledRuntimeLifecycle
     }
 
     /**
+     * Activation hooks register routes independently of any enclosing route group.
+     *
      * @param  class-string  $provider
      * @param  Closure(): void  $activate
      */
@@ -295,6 +301,17 @@ final class InstalledRuntimeLifecycle
         }
 
         $data = CapellCore::getPackage($package);
+        $unmet = FindUnmetPackageRequirementsAction::run($data);
+        if ($unmet !== []) {
+            foreach ($unmet as $requirement) {
+                $this->recordRequirementSkip($requirement->package, $requirement->requirement);
+            }
+
+            return $completed[$package] = false;
+        }
+
+        unset($this->requirementSkips[$package]);
+
         // Composer discovery can preload a main provider absent from every bucket.
         $main = $data->serviceProviderClass;
         if ($ancestors !== [] && $main !== null && self::adopts($main) && ! isset($this->providers[$main])) {
@@ -333,7 +350,8 @@ final class InstalledRuntimeLifecycle
                 }
 
                 $this->states[$provider] = 'activating';
-                $routes = $this->app->make(Router::class)->getRoutes();
+                $router = $this->app->make(Router::class);
+                $routes = $router->getRoutes();
                 $before = array_map(spl_object_id(...), $routes->getRoutes());
 
                 try {
@@ -341,7 +359,9 @@ final class InstalledRuntimeLifecycle
                     $context = TrustedCorePackages::contains($package)
                         ? ExtensionContributionReceiptContext::foundation($package, $registration['bucket'], $provider)
                         : ExtensionContributionReceiptContext::forPackage($package, $registration['bucket'], $provider);
-                    $receipts->withContexts([$context], $registration['activate']);
+                    $receipts->withContexts([$context], static function () use ($router, $registration): void {
+                        RouteGroupIsolation::run($router, $registration['activate']);
+                    });
                     $this->states[$provider] = 'active';
                     unset($this->pending[$package][$provider]);
                     if ($this->pending[$package] === []) {
@@ -374,6 +394,17 @@ final class InstalledRuntimeLifecycle
         } while (count($this->providers) !== $known);
 
         return $completed[$package] = true;
+    }
+
+    private function recordRequirementSkip(string $package, string $requirement): void
+    {
+        if (isset($this->requirementSkips[$package][$requirement])) {
+            return;
+        }
+
+        $this->requirementSkips[$package][$requirement] = true;
+        $context = ['package' => $package, 'requirement' => $requirement];
+        Log::warning(__('capell-core::package-requirements.runtime_skipped', $context), $context);
     }
 
     private function selected(string $bucket): bool

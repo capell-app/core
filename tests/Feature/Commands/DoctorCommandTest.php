@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 use Capell\Core\Actions\Diagnostics\BuildDoctorReportAction;
 use Capell\Core\Actions\Extensions\AuditExtensionContractsAction;
+use Capell\Core\Actions\Install\CallArtisanCommandAction;
 use Capell\Core\Actions\SetupPageUrlsAction;
+use Capell\Core\Data\Install\ArtisanCommandResultData;
 use Capell\Core\Enums\ExtensionStatusEnum;
 use Capell\Core\Facades\CapellCore;
 use Capell\Core\Models\CapellExtension;
@@ -102,6 +104,7 @@ afterEach(function (): void {
         'throwing-doctor',
         'invalid-json-doctor',
         'invalid-shape-doctor',
+        'late-doctor',
     ] as $scratchDir) {
         File::deleteDirectory(storage_path('framework/testing/' . $scratchDir));
     }
@@ -113,6 +116,47 @@ it('exits successfully when all checks pass', function (): void {
     artisanCommand('capell:doctor')
         ->assertExitCode(Command::SUCCESS);
 })->group('database-portability');
+
+it('reports disabled requirements even when the enabled package has no pending runtime providers', function (): void {
+    seedHealthyDoctorInstall();
+    CapellCore::registerPackage('vendor/enabled-dependent');
+    CapellCore::registerPackage('vendor/disabled-requirement');
+    CapellCore::getPackage('vendor/enabled-dependent')->requirements = ['vendor/disabled-requirement'];
+    CapellCore::markPackageInstalled('vendor/enabled-dependent');
+    CapellCore::markPackageInstalled('vendor/disabled-requirement');
+    CapellCore::markPackageDisabled('vendor/disabled-requirement');
+
+    artisanCommand('capell:doctor')
+        ->expectsOutputToContain('vendor/enabled-dependent -> vendor/disabled-requirement')
+        ->assertExitCode(Command::FAILURE);
+
+    $report = BuildDoctorReportAction::run();
+    $check = $report->checks->firstWhere('id', 'core.packages.installed-runtime');
+    expect($check?->evidence['requirements'])->toBe([
+        ['package' => 'vendor/enabled-dependent', 'requirement' => 'vendor/disabled-requirement'],
+    ]);
+
+    CapellCore::markPackageInstalled('vendor/disabled-requirement');
+    expect(BuildDoctorReportAction::run()->checks->firstWhere('id', 'core.packages.installed-runtime')?->passed)->toBeTrue();
+});
+
+it('names every enabled package blocked by an unmet transitive requirement', function (): void {
+    foreach (['vendor/dependent', 'vendor/middle', 'vendor/disabled-requirement'] as $name) {
+        CapellCore::registerPackage($name);
+        CapellCore::markPackageInstalled($name);
+    }
+
+    CapellCore::getPackage('vendor/dependent')->requirements = ['vendor/middle'];
+    CapellCore::getPackage('vendor/middle')->requirements = ['vendor/disabled-requirement'];
+    CapellCore::markPackageDisabled('vendor/disabled-requirement');
+    $check = BuildDoctorReportAction::run()->checks->firstWhere('id', 'core.packages.installed-runtime');
+
+    expect($check?->passed)->toBeFalse()
+        ->and($check?->evidence['requirements'])->toBe([
+            ['package' => 'vendor/dependent', 'requirement' => 'vendor/middle'],
+            ['package' => 'vendor/middle', 'requirement' => 'vendor/disabled-requirement'],
+        ]);
+});
 
 it('reports required tables as present', function (): void {
     seedHealthyDoctorInstall();
@@ -484,6 +528,24 @@ it('can skip package doctor checks for installer health gates', function (): voi
 
     expect($labels)->not->toContain('Failing package-owned doctor check')
         ->and($report->passed())->toBeTrue();
+});
+
+it('routes newly installed package doctor checks through the shared helper', function (): void {
+    registerDoctorPackageForTest('capell-app/late-doctor', 'test:late-doctor');
+    $spy = bindFakeAction(CallArtisanCommandAction::class, new ArtisanCommandResultData(
+        1,
+        json_encode(['checks' => [[
+            'id' => 'test.package-ready', 'label' => 'Late package doctor',
+            'passed' => false, 'message' => 'Requires setup.', 'severity' => 'critical',
+        ]]], JSON_THROW_ON_ERROR),
+        'A diagnostic on stderr.',
+    ));
+    $action = resolve(BuildDoctorReportAction::class);
+    $checks = new ReflectionMethod($action, 'installedPackageDoctorChecks')->invoke($action);
+
+    expect($spy->args)->toBe(['test:late-doctor', ['--json' => true]])
+        ->and($checks->firstWhere('id', 'test.package-ready')?->passed)->toBeFalse()
+        ->and($checks->firstWhere('id', 'test.package-ready')?->message)->toBe('Requires setup.');
 });
 
 it('reports invalid package doctor output without hiding the rest of the install summary', function (): void {

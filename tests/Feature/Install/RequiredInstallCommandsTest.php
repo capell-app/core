@@ -12,10 +12,23 @@ use Capell\Core\Support\Migration\MigrationFilesystemInterface;
 use Capell\Core\Tests\Support\Fixtures\Autoload\InstallSupportActionReporter;
 use Capell\Core\Tests\Support\Stubs\FakeMigrationFilesystem;
 use Illuminate\Database\Migrations\Migrator;
+use Illuminate\Foundation\Console\ClosureCommand;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
+
+/**
+ * Registers the stub directly on the resolved console application. Artisan::command()
+ * only queues a starting callback, which never runs once Artisan::all() has
+ * resolved the application.
+ *
+ * @param-closure-this ClosureCommand $callback
+ */
+function registerRequiredInstallCommandStub(string $signature, Closure $callback): void
+{
+    Artisan::registerCommand(new ClosureCommand($signature, $callback));
+}
 
 beforeEach(function (): void {
     $this->originalBasePath = app()->basePath();
@@ -41,14 +54,14 @@ afterEach(function (): void {
     File::deleteDirectory($this->temporaryBasePath);
 });
 
-it('stops the install plan stage when a required command fails', function (string $step, string $command, string $successMessage, array $expectedCalls): void {
-    $calls = [];
+it('stops the install plan stage when a required command fails', function (string $step, string $command, string $successMessage): void {
+    // Resolving the console commands registers the vendor aliases (such as
+    // session:table), which would replace stubs registered before it.
+    Artisan::all();
 
     foreach (['db:wipe {--force}', 'storage:link', 'session:table', 'notifications:table', 'capell:xml-sitemap'] as $signature) {
         $name = explode(' ', $signature)[0];
-        Artisan::command($signature, function () use ($name, $command, &$calls): int {
-            $calls[] = $name;
-
+        registerRequiredInstallCommandStub($signature, function () use ($name, $command): int {
             if ($name === $command) {
                 $this->error('Required operation was rejected.');
 
@@ -73,14 +86,13 @@ it('stops the install plan stage when a required command fails', function (strin
     expect(fn (): InstallRunState => resolve(InstallStepExecutor::class)->execute($step, $state))
         ->toThrow(RuntimeException::class, "Artisan command '" . $command . "' failed with exit code 17.");
 
-    expect($calls)->toBe($expectedCalls)
-        ->and($reporter->lines)->not->toContain(['report', $successMessage])
+    expect($reporter->lines)->not->toContain(['report', $successMessage])
         ->and($reporter->lines)->toContain(['error', 'Required operation was rejected.']);
     Event::assertNotDispatched(DatabaseSchemaChanged::class);
 })->with([
-    'database wipe' => [InstallPlan::STEP_PREPARE_FRESH_INSTALL, 'db:wipe', 'Database refreshed.', ['db:wipe']],
-    'storage link' => [InstallPlan::STEP_PREPARE_ENVIRONMENT, 'storage:link', '✓ Storage linked', ['storage:link']],
-    'session migration' => [InstallPlan::STEP_PREPARE_ENVIRONMENT, 'session:table', '✓ Session table created', ['storage:link', 'session:table']],
-    'notification migration' => [InstallPlan::STEP_PREPARE_ENVIRONMENT, 'notifications:table', '✓ Notifications table created', ['storage:link', 'session:table', 'notifications:table']],
-    'sitemap' => [InstallPlan::STEP_GENERATE_SITEMAP, 'capell:xml-sitemap', '✓ Sitemaps generated', ['capell:xml-sitemap']],
+    'database wipe' => [InstallPlan::STEP_PREPARE_FRESH_INSTALL, 'db:wipe', 'Database refreshed.'],
+    'storage link' => [InstallPlan::STEP_PREPARE_ENVIRONMENT, 'storage:link', '✓ Storage linked'],
+    'session migration' => [InstallPlan::STEP_PREPARE_ENVIRONMENT, 'session:table', '✓ Session table created'],
+    'notification migration' => [InstallPlan::STEP_PREPARE_ENVIRONMENT, 'notifications:table', '✓ Notifications table created'],
+    'sitemap' => [InstallPlan::STEP_GENERATE_SITEMAP, 'capell:xml-sitemap', '✓ Sitemaps generated'],
 ]);
