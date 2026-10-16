@@ -83,12 +83,14 @@ use Capell\Frontend\Support\Assets\FrontendAssetsService;
 use Capell\Frontend\Support\Assets\FrontendPackageDependencyRegistry;
 use Capell\Frontend\Support\Assets\FrontendResourceRegistry;
 use Capell\Frontend\Support\Assets\FrontendViteInputRegistry;
+use Capell\Frontend\Support\Bootstrap\FrontendEventBootstrapper;
 use Capell\Frontend\Support\Cache\CacheInvalidationDependencyRegistry;
 use Capell\Frontend\Support\Cache\PublicRenderDataCacheDependencyRegistry;
 use Capell\Frontend\Support\Components\FrontendComponentRegistry;
 use Capell\Frontend\Support\Links\PublicRouteAliasRegistry;
 use Capell\Frontend\Support\Locale\FrontendLocaleScope;
 use Capell\Frontend\Support\Render\FrontendHookRegistrar;
+use Capell\Frontend\Support\Render\PublicRenderDataScope;
 use Capell\Frontend\Support\Render\RenderHookRegistry;
 use Capell\Frontend\Support\Renderables\RenderableDynamicDataRegistry;
 use Capell\Frontend\Support\Routing\FrontendRouteMiddlewareRegistry;
@@ -195,6 +197,7 @@ final class SingletonLifetimeInventory
 
             // Frontend boot registration state and one reset participant.
             FrontendAssetsService::class => self::boot('Asset declarations are package boot registrations.'),
+            FrontendEventBootstrapper::class => self::boot('Event listener and observer registration marks are package boot state.'),
             FrontendComponentRegistry::class => self::boot('Frontend components are package boot registrations.'),
             PublicRouteAliasRegistry::class => self::boot('Public route aliases are package boot registrations.'),
             RenderableDynamicDataRegistry::class => self::boot('Dynamic data resolvers are package boot registrations.'),
@@ -234,6 +237,7 @@ final class SingletonLifetimeInventory
         return [
             SignalDispatchGuard::class => 'Weak application and fibre keys isolate in-flight reporting; finally releases completed dispatches without retaining request containers.',
             HasModelRelations::class => 'This trait provides a deliberate boot registry shared by every operation.',
+            PublicRenderDataScope::class => 'Render-local data set only inside during(), which restores the previous value in finally, so nothing outlives a public render or crosses requests.',
             ExtensibleModel::class => 'Extension fillable and cast declarations are deliberate model boot registries.',
             ManifestLoader::class => 'Registered manifest autoload paths are process boot metadata and prevent duplicate Composer loaders.',
             SanitizeSiteSpecSectionHtmlAction::class => 'The sanitizer is an immutable process-wide parser cache.',

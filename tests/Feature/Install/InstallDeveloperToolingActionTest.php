@@ -7,8 +7,21 @@ use Capell\Core\Contracts\ProgressReporter;
 use Capell\Core\Facades\CapellCore;
 use Capell\Core\Support\Install\DeveloperToolingInstallationState;
 use Capell\Core\Support\Install\NullProgressReporter;
+use Capell\Core\Tests\Support\Install\MidInstallBoostTestProvider;
+use Composer\Autoload\ClassLoader;
+use Composer\InstalledVersions;
+use Illuminate\Filesystem\Filesystem;
+use Illuminate\Foundation\PackageManifest;
+use Illuminate\Support\Facades\Artisan;
 
-beforeEach(function (): void {
+/** @var array<string, ClassLoader> $originalLoaders */
+$originalLoaders = [];
+$originalInstalled = [];
+
+beforeEach(function () use (&$originalLoaders, &$originalInstalled): void {
+    $originalLoaders = ClassLoader::getRegisteredLoaders();
+    $originalInstalled = require dirname(__DIR__, 5) . '/vendor/composer/installed.php';
+
     InstallDeveloperToolingAction::resetProcessFactory();
     InstallDeveloperToolingAction::resetArtisanCaller();
     InstallDeveloperToolingAction::resetAgentBridgeRepositoryPath();
@@ -17,7 +30,19 @@ beforeEach(function (): void {
     bindInstallDeveloperToolingState(false);
 });
 
-afterEach(function (): void {
+afterEach(function () use (&$originalLoaders, &$originalInstalled): void {
+    // Fake Composer installs still reload Testbench's vendor autoloader. Restore
+    // the owning checkout's loaders so subsequent tests cannot load foreign source.
+    foreach (ClassLoader::getRegisteredLoaders() as $loader) {
+        $loader->unregister();
+    }
+
+    foreach (array_reverse($originalLoaders) as $loader) {
+        $loader->register(prepend: true);
+    }
+
+    InstalledVersions::reload($originalInstalled);
+
     InstallDeveloperToolingAction::resetProcessFactory();
     InstallDeveloperToolingAction::resetArtisanCaller();
     InstallDeveloperToolingAction::resetAgentBridgeRepositoryPath();
@@ -39,6 +64,14 @@ function bindInstallDeveloperToolingState(bool $installed): void
 }
 
 it('requires boost and capell agent-bridge then configures boost tooling', function (): void {
+    Artisan::all();
+    $manifest = Mockery::mock(PackageManifest::class);
+    $manifest->manifestPath = '/test/discovered-packages.php';
+    $manifest->files = Mockery::mock(Filesystem::class);
+    $manifest->files->shouldReceive('getRequire')->once()->with($manifest->manifestPath)->andReturn([
+        'laravel/boost' => ['providers' => [MidInstallBoostTestProvider::class]],
+    ]);
+    app()->instance(PackageManifest::class, $manifest);
     $commands = [];
     $composerJsonPath = tempnam(sys_get_temp_dir(), 'capell-composer-');
     $boostJsonPath = tempnam(sys_get_temp_dir(), 'capell-boost-');
@@ -101,6 +134,10 @@ it('requires boost and capell agent-bridge then configures boost tooling', funct
         $unsupportedOptions = array_diff(array_keys($parameters), $validOptions[$command] ?? []);
 
         expect($unsupportedOptions)->toBe([]);
+
+        if ($command === 'boost:install') {
+            expect(Artisan::call('test:boost-mid-install'))->toBe(0);
+        }
 
         $artisanCalls[] = [$command, $parameters];
 
