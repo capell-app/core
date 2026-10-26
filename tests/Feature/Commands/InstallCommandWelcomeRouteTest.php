@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Capell\Core\Actions\Install\RunInstallAction;
 use Capell\Core\Enums\PackageScopeEnum;
 use Capell\Core\Facades\CapellCore;
+use Capell\Core\Support\Install\Cli\InstallPostInstallOptionResolver;
 use Capell\Core\Support\Install\WelcomeRouteInstaller;
 use Capell\Core\Support\Migration\MigrationFilesystemInterface;
 use Capell\Core\Tests\Feature\Commands\Fixtures\FakeMigrationFilesystem;
@@ -380,7 +381,7 @@ PHP);
     expect(file_get_contents(welcomeRouteTestEnvPath()))->toContain('CAPELL_FRONTEND_REGISTER_HOME_ROUTE=true');
 });
 
-it('removes the capell home route when requested by the install step', function (): void {
+it('preserves the capell controller home route when requested by the install step', function (): void {
     $routesPath = welcomeRouteTestRoutesPath();
     if (! is_dir(dirname($routesPath))) {
         mkdir(dirname($routesPath), 0755, true);
@@ -397,9 +398,12 @@ PHP);
 
     $installer = resolve(WelcomeRouteInstaller::class);
 
-    expect($installer->install())->toBeTrue();
+    $original = file_get_contents($routesPath);
 
-    assertWelcomeRouteAbsent($routesPath);
+    expect($installer->hasRootRoute())->toBeTrue()
+        ->and($installer->hasStockWelcomeRoute())->toBeFalse()
+        ->and($installer->install())->toBeFalse()
+        ->and(file_get_contents($routesPath))->toBe($original);
 });
 
 it('preserves existing route file headers when no removable home route exists', function (): void {
@@ -483,3 +487,181 @@ function assertWelcomeRouteAbsent(string $path): void
     expect(fn () => Route::getRoutes()->match(Request::create('/')))
         ->toThrow(NotFoundHttpException::class);
 }
+
+it('removes only the top level stock welcome statement and preserves grouped routes byte for byte', function (string $welcome): void {
+    $routesPath = welcomeRouteTestRoutesPath();
+    if (! is_dir(dirname($routesPath))) {
+        mkdir(dirname($routesPath), 0755, true);
+    }
+
+    $group = <<<'PHP'
+Route::prefix('_local/email-previews')->name('local.email-previews.')->group(function (): void {
+    Route::get('/', [EmailPreviewController::class, 'index'])->name('index');
+
+
+    Route::prefix('stock')->group(function (): void {
+        Route::view('/', 'welcome');
+    });
+});
+PHP;
+    $before = "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\n" . $group . "\n\n";
+    $after = "\n\nRoute::get('/health', fn () => 'ok');\n";
+    file_put_contents($routesPath, $before . $welcome . $after);
+
+    $installer = resolve(WelcomeRouteInstaller::class);
+
+    expect($installer->hasRootRoute())->toBeTrue()
+        ->and($installer->hasStockWelcomeRoute())->toBeTrue()
+        ->and($installer->install())->toBeTrue()
+        ->and(file_get_contents($routesPath))->toBe($before . $after);
+
+    $routes = patchedCoreWelcomeRoutes($routesPath);
+    expect($routes->match(Request::create('/_local/email-previews/stock'))->defaults['view'])->toBe('welcome')
+        ->and($routes->match(Request::create('/health'))->run())->toBe('ok')
+        ->and($routes->match(Request::create('/_local/email-previews'))->getAction('controller'))->toBe('EmailPreviewController@index');
+    expect(fn () => $routes->match(Request::create('/')))->toThrow(NotFoundHttpException::class);
+
+    expect($installer->hasRootRoute())->toBeFalse()
+        ->and($installer->hasStockWelcomeRoute())->toBeFalse()
+        ->and($installer->install())->toBeFalse()
+        ->and(file_get_contents($routesPath))->toBe($before . $after);
+})->with([
+    'closure' => "Route::get('/', function () { return view('welcome'); });",
+    'static closure' => "Route::get('/', static function () { return view('welcome'); });",
+    'arrow' => "Route::get('/', fn () => view('welcome'));",
+    'static arrow' => 'Route::get("/", static fn () => view("welcome"));',
+    'view' => "Route::view('/', 'welcome');",
+    'named view' => "Route::view('/', 'welcome')->name('home');",
+]);
+
+it('ignores group relative root routes and leaves the file unchanged', function (): void {
+    $routesPath = welcomeRouteTestRoutesPath();
+    if (! is_dir(dirname($routesPath))) {
+        mkdir(dirname($routesPath), 0755, true);
+    }
+
+    $content = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::prefix('_local/email-previews')->group(function (): void {
+    Route::get('/', [EmailPreviewController::class, 'index'])->name('index');
+    Route::view('/', 'welcome');
+});
+PHP;
+    file_put_contents($routesPath, $content);
+    $installer = resolve(WelcomeRouteInstaller::class);
+
+    expect($installer->hasRootRoute())->toBeFalse()
+        ->and($installer->canInstall())->toBeFalse()
+        ->and($installer->hasStockWelcomeRoute())->toBeFalse()
+        ->and($installer->install())->toBeFalse()
+        ->and(file_get_contents($routesPath))->toBe($content);
+});
+
+function patchedCoreWelcomeRoutes(string $path): RouteCollection
+{
+    $router = Route::getFacadeRoot();
+    $original = $router->getRoutes();
+    $routes = new RouteCollection;
+    $router->setRoutes($routes);
+    try {
+        require $path;
+
+        return $routes;
+    } finally {
+        $router->setRoutes($original);
+    }
+}
+
+it('keeps frontend root registration disabled when an accepted CLI choice leaves an application root', function (string $route): void {
+    $path = welcomeRouteTestRoutesPath();
+    if (! is_dir(dirname($path))) {
+        mkdir(dirname($path), 0755, true);
+    }
+
+    $content = "<?php\nuse Illuminate\\Support\\Facades\\Route;\n" . $route;
+    file_put_contents($path, $content);
+    file_put_contents(welcomeRouteTestEnvPath(), "CAPELL_FRONTEND_REGISTER_HOME_ROUTE=false\n");
+    $installer = resolve(WelcomeRouteInstaller::class);
+    $messages = [];
+    $record = function (string $message) use (&$messages): void {
+        $messages[] = $message;
+    };
+    (new InstallPostInstallOptionResolver)->configureWelcomeRoute($installer, true, $record, $record);
+    $installer->install();
+    expect(file_get_contents(welcomeRouteTestEnvPath()))->toContain('CAPELL_FRONTEND_REGISTER_HOME_ROUTE=false')
+        ->and($messages)->toBe([])
+        ->and($installer->hasRootRoute())->toBeTrue();
+    $expected = str_replace("Route::get('/', fn () => view('welcome'));", '', $content);
+    expect(file_get_contents($path))->toBe($expected);
+    $routes = patchedCoreWelcomeRoutes($path);
+    expect($routes->match(Request::create('/'))->uri())->toBe('/');
+})->with([
+    'controller' => "Route::get('/', [HomeController::class, 'index']);",
+    'view' => "Route::view('/', 'homepage');",
+    'redirect' => "Route::redirect('/', '/health');",
+    'middleware group' => "Route::middleware('auth')->group(function () { Route::get('/', [HomeController::class, 'index']); });",
+    'resource index' => "Route::resource('/', HomeController::class)->only('index');",
+    'group router' => "Route::group([], function (\\Illuminate\\Routing\\Router \$router) { \$router->get('/', fn () => 'custom'); });",
+    'invoked closure' => "(function () { Route::get('/', fn () => 'custom'); })();",
+    'set root URI' => "Route::get('/health', fn () => 'custom')->setUri('/');",
+    'assigned group callback' => "\$registerHome = function () { Route::get('/', fn () => 'custom'); }; Route::group([], \$registerHome);",
+    'explicit invocation' => "(function () { Route::get('/', fn () => 'custom'); })->__invoke();",
+    'call_user_func' => "call_user_func(function () { Route::get('/', fn () => 'custom'); });",
+    'named registration function' => "function coreWelcomeRouteRegisterHome() { Route::get('/', fn () => 'custom'); } coreWelcomeRouteRegisterHome();",
+    'local router' => "\$router = app('router'); \$router->get('/', fn () => 'custom');",
+    'parenthesised setUri' => "(Route::get('/health', fn () => 'custom'))->setUri('/');",
+    'unresolved group callback expression' => "Route::group([], [fn () => Route::get('/', fn () => 'custom')][0]);",
+    'stock plus custom root' => "Route::get('/', fn () => view('welcome'));\nRoute::redirect('/', '/health');",
+]);
+
+it('enables the frontend root only after the stock route has been removed', function (): void {
+    $path = welcomeRouteTestRoutesPath();
+    if (! is_dir(dirname($path))) {
+        mkdir(dirname($path), 0755, true);
+    }
+
+    file_put_contents($path, "<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::view('/', 'welcome');");
+    file_put_contents(welcomeRouteTestEnvPath(), "CAPELL_FRONTEND_REGISTER_HOME_ROUTE=false\n");
+    $installer = resolve(WelcomeRouteInstaller::class);
+    $messages = [];
+    $record = function (string $message) use (&$messages): void {
+        $messages[] = $message;
+    };
+    (new InstallPostInstallOptionResolver)->configureWelcomeRoute($installer, true, $record, $record);
+    expect(file_get_contents(welcomeRouteTestEnvPath()))->toContain('CAPELL_FRONTEND_REGISTER_HOME_ROUTE=false')
+        ->and($installer->hasStockWelcomeRoute())->toBeTrue();
+    expect($installer->install())->toBeTrue()
+        ->and($installer->hasRootRoute())->toBeFalse()
+        ->and(file_get_contents(welcomeRouteTestEnvPath()))->toContain('CAPELL_FRONTEND_REGISTER_HOME_ROUTE=true')
+        ->and($messages)->toBe([]);
+});
+
+it('enables the frontend root when fluent mutations move the application route away from root', function (string $route): void {
+    $path = welcomeRouteTestRoutesPath();
+    if (! is_dir(dirname($path))) {
+        mkdir(dirname($path), 0755, true);
+    }
+
+    $content = "<?php\nuse Illuminate\\Support\\Facades\\Route;\n" . $route;
+    file_put_contents($path, $content);
+    file_put_contents(welcomeRouteTestEnvPath(), "CAPELL_FRONTEND_REGISTER_HOME_ROUTE=false\n");
+    $installer = resolve(WelcomeRouteInstaller::class);
+    $record = static function (string $message): void {};
+    (new InstallPostInstallOptionResolver)->configureWelcomeRoute($installer, true, $record, $record);
+
+    expect($installer->install())->toBeFalse()
+        ->and($installer->hasRootRoute())->toBeFalse()
+        ->and(file_get_contents(welcomeRouteTestEnvPath()))->toContain('CAPELL_FRONTEND_REGISTER_HOME_ROUTE=true')
+        ->and(file_get_contents($path))->toBe($content);
+    $routes = patchedCoreWelcomeRoutes($path);
+    expect($routes->match(Request::create('/admin'))->run())->toBe('custom');
+    expect(fn () => $routes->match(Request::create('/')))->toThrow(NotFoundHttpException::class);
+})->with([
+    'prefix' => "Route::get('/', fn () => 'custom')->prefix('admin');",
+    'setUri' => "Route::get('/', fn () => 'custom')->setUri('/admin');",
+    'parenthesised prefix' => "(Route::get('/', fn () => 'custom'))->prefix('admin');",
+    'parenthesised setUri' => "(Route::get('/', fn () => 'custom'))->setUri('/admin');",
+]);

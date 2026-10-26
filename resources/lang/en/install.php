@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 return [
+    'starter_user_exists' => 'Skipped starter user :email because the account already exists.',
     'recovery' => [
         'failed' => 'Installation stopped at :step.',
         'completed' => ':count steps completed: :steps',
@@ -174,5 +175,74 @@ return [
         'production_credentials_refused' => 'Refusing the known demo administrator credentials in production. Supply a unique administrator password or explicitly pass --allow-demo-credentials for an intentional demo.',
         'knowledge_site' => 'Capell Knowledge',
         'services_site' => 'Capell Services',
+    ],
+    'handoff' => [
+        'title' => 'What next',
+        'tips' => [
+            'review' => [
+                'label' => 'Review',
+                'detail' => 'Resolve the incomplete checks above, then rerun capell:install.',
+            ],
+            'frontend_build' => [
+                'label' => 'Build',
+                'detail' => 'Install and build the frontend assets first: :command',
+            ],
+            'sign_in' => [
+                'label' => 'Sign in',
+                'detail' => ':url',
+            ],
+            'sign_in_as' => [
+                'label' => 'Sign in',
+                'detail' => ':url as :email',
+            ],
+            'sign_in_existing' => [
+                'label' => 'Sign in',
+                'detail' => ':url with your existing administrator account',
+            ],
+            'sign_in_no_admin' => [
+                'label' => 'Admin',
+                'detail' => 'No Admin panel is installed. Add capell-app/admin to edit content in the browser.',
+            ],
+            'first_page_editable' => [
+                'label' => 'Your site',
+                'detail' => 'Your homepage is live at :url. Edit it under Admin → Pages.',
+            ],
+            'first_page_unverified' => [
+                'label' => 'Your site',
+                'detail' => 'A page exists but could not be opened for editing. Check :url, then open Admin → Pages.',
+            ],
+            'first_page_missing' => [
+                'label' => 'Your site',
+                'detail' => 'No site or page yet. Create a site under Admin → Sites, then add its first page under Admin → Pages.',
+            ],
+            'first_page_demo' => [
+                'label' => 'Your site',
+                'detail' => 'Demo content is seeded at :url. Explore it under Admin → Pages, then replace it with your own.',
+            ],
+            'theme' => [
+                'label' => 'Theme',
+                'detail' => ':package is active. Switch or adjust it under Admin → Themes.',
+            ],
+            'package_blog' => [
+                'label' => 'Blog',
+                'detail' => 'Blog is installed with no articles yet. Write the first one in Admin.',
+            ],
+            'package_form_builder' => [
+                'label' => 'Forms',
+                'detail' => 'Form Builder is installed with no forms yet. Build one in Admin and place it on a page.',
+            ],
+            'package_events' => [
+                'label' => 'Events',
+                'detail' => 'Events is installed with no events yet. Add the first one in Admin.',
+            ],
+            'package_knowledge_base' => [
+                'label' => 'Docs',
+                'detail' => 'Knowledge Base is installed with no collections yet. Create one in Admin.',
+            ],
+            'package_bookings' => [
+                'label' => 'Bookings',
+                'detail' => 'Bookings is installed with nothing bookable yet. Set up the first service in Admin.',
+            ],
+        ],
     ],
 ];

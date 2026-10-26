@@ -62,8 +62,19 @@ The simplest way to add optional product capability is to install a package that
 
 ```bash
 composer require capell-app/<package>
-php artisan capell:<package>-install
+php artisan capell:package-cache:clear
+php artisan capell:extension-install capell-app/<package> --dry-run
+php artisan capell:extension-install capell-app/<package>
 ```
+
+Composer presence, Capell installation/enabled state, and the selected runtime or
+theme are separate states. Use the generic lifecycle command for packages both
+with and without a custom install command: it invokes the package's declared
+lifecycle when present. A package-specific setup command is an additional step
+only when its README documents one. For example, the
+[Inertia runtime guide](../../../docs/getting-started/inertia-runtime.md) installs
+the bridge and an adapter before configuring the selected adapter; installing a
+theme likewise does not apply it to a site.
 
 For current package inventory and per-package descriptions, use generated extension pages and package-owned READMEs. The host [packages and extensions](../../../docs/packages/catalog.md) page only documents core package boundaries and authoring entry points. The remainder of this guide covers extension points you reach for when you're writing your own code.
 
@@ -430,16 +441,17 @@ Then check [Extension Troubleshooting](../../../docs/packages/extension-troubles
 
 ## Theme Chrome Components
 
-Theme packages can register public header and footer Blade components for admin selection without hard-coding free-text component names into theme forms.
+Theme packages can register trusted public header and footer Blade components and logo views. Stored selectors must use these registrations, including when written outside admin forms.
 
 ```php
 use Capell\Core\Support\Themes\ThemeChromeRegistry;
 
 app(ThemeChromeRegistry::class)->registerHeader('vendor-theme::header', 'Vendor header');
 app(ThemeChromeRegistry::class)->registerFooter('vendor-theme::footer', 'Vendor footer');
+app(ThemeChromeRegistry::class)->registerLogo('vendor-theme::logo', 'Vendor logo');
 ```
 
-The admin theme form validates `header_file` and `footer_file` against the registered options when saving. Public frontend rendering still reads the saved component name directly, so registration affects admin validation and editing, not normal page boot.
+Model saves validate `header_file` and `footer_file` against the registered options, and public rendering checks them again before selecting a view. Invalid stored layout or theme selectors return a generic 404. Site `logo_blade_view` metadata, including values inherited from Blueprint metadata, must also be registered; both public logo consumers omit unregistered logo views. The built-in `brand.capell-logo` is registered by default, and `false` disables the logo view. Load registrations for HTTP requests, CLI commands, jobs and imports.
 
 ## 10. Further Reading
 
