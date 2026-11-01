@@ -13,6 +13,7 @@ use Capell\Core\Models\Concerns\HasTranslations;
 use Capell\Core\Models\Contracts\Translatable;
 use Capell\Core\Support\Media\LocalizedMediaMetadata;
 use Capell\Core\Support\Media\LocalizedMediaMetadataResolver;
+use Capell\Core\Support\Media\MediaCropPresetRepository;
 use Capell\Core\Support\Media\YouTubeVideoUrl;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
@@ -95,6 +96,14 @@ class Media extends \Spatie\MediaLibrary\MediaCollections\Models\Media implement
 
     protected static string $factory = MediaFactory::class;
 
+    #[Override]
+    public function getTable(): string
+    {
+        $table = parent::getTable();
+
+        return $table === 'media' ? (string) config('capell.database.external_tables.media', 'media') : $table;
+    }
+
     /**
      * @param  array<string, mixed>|null  $attr
      */
@@ -167,6 +176,14 @@ class Media extends \Spatie\MediaLibrary\MediaCollections\Models\Media implement
     public function isExternalVideo(): bool
     {
         return $this->externalVideo() instanceof ExternalVideoData;
+    }
+
+    /**
+     * Whether this record's identity is an uploaded file rather than an external video source.
+     */
+    public function isFileBacked(): bool
+    {
+        return ! $this->isExternalVideo() && $this->mime_type !== 'video/youtube';
     }
 
     public function externalVideo(): ?ExternalVideoData
@@ -282,11 +299,25 @@ class Media extends \Spatie\MediaLibrary\MediaCollections\Models\Media implement
     }
 
     /**
+     * Whether an editor has stored a crop preset selection, including an explicitly empty one.
+     */
+    public function hasCropPresetSelection(): bool
+    {
+        return is_array(data_get($this->custom_properties, 'capell.crops'));
+    }
+
+    /**
      * @return list<string>
      */
     public function getCropPresetNames(): array
     {
-        return array_keys($this->getCropPresets());
+        // Follow the registered preset order: JSON columns (MySQL) reorder stored object keys.
+        $names = array_keys($this->getCropPresets());
+        $registered = array_values(array_intersect(resolve(MediaCropPresetRepository::class)->names(), $names));
+        $unregistered = array_values(array_diff($names, $registered));
+        sort($unregistered, SORT_STRING);
+
+        return [...$registered, ...$unregistered];
     }
 
     /**

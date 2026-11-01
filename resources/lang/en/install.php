@@ -3,6 +3,29 @@
 declare(strict_types=1);
 
 return [
+    'tables' => [
+        'choice_required' => 'These tables already exist: :tables. Supply table aliases or a prefix before installing.',
+        'review' => 'Database configuration :key will use :table.',
+        'foreign_table' => "The table :table already exists but migration :migration is not recorded, so Capell will not take it over. If it is a Capell table that lost its migration record, run :command; it records the migration only when the table's columns, types, nullability and primary key match. If it belongs to another application, set :prefix_key or :alias_key to give Capell's table a different name. That prefix and alias route is for foreign tables only.",
+        'foreign_external_table' => "The table :table already exists but its creating migration :migration is not recorded, so Capell will not take it over. If it belongs to another application, set :alias_key to give this package's table a different name.",
+        'adopt_unknown' => 'No Capell migration creates a table named :table.',
+        'adopt_missing' => 'The table :table does not exist, so there is nothing to adopt.',
+        'adopt_recorded' => 'The creating migration :migration is already recorded; nothing to do.',
+        'adopt_mismatch' => 'The table :table does not match the table that migration :migration creates, so it is not adopted. Use the prefix or alias route instead.',
+        'adopt_confirm' => 'The table :table matches migration :migration. Run again with --confirm to record that migration.',
+        'adopt_done' => 'Recorded migration :migration for :table.',
+        'invalid_prefix' => 'A table prefix may only contain letters, numbers and underscores, and must not start with a number.',
+        'prefix_too_long' => 'The prefix :prefix is too long: the table :table would exceed the database identifier limit. Use a prefix of at most :max characters.',
+        'duplicate_targets' => 'Two tables would use the same name. Choose distinct names.',
+        'invalid_option' => 'Use --table-alias=name=alias for each table.',
+        'invalid_name' => 'Choose a valid table name for :table.',
+        'target_in_use' => 'The table name :table is already in use. Choose another name.',
+        'choice_label' => 'Some database tables already exist. How would you like to name the new tables?',
+        'prefix_choice' => 'Use a prefix',
+        'aliases_choice' => 'Choose table names individually',
+        'prefix_label' => 'Prefix for the new tables',
+        'alias_label' => 'New table name for :table',
+    ],
     'starter_user_exists' => 'Skipped starter user :email because the account already exists.',
     'recovery' => [
         'failed' => 'Installation stopped at :step.',
@@ -12,8 +35,14 @@ return [
         'build_failed' => 'Frontend dependency installation or build failed.',
     ],
     'simple' => [
-        'continue' => 'How would you like to continue?',
-        'install' => 'Confirm all basics and install',
+        'continue' => 'Review or change your settings',
+        'review_label' => 'Confirm your installation settings',
+        'review_site' => 'Site address: :url',
+        'review_packages' => 'Packages and theme shown above',
+        'review_administrator' => 'Administrator shown above',
+        'review_other' => 'Other application changes shown above',
+        'review_hint' => 'Press Enter to install. Untick one item to change it, or Ctrl+A to cancel. Space toggles.',
+        'review_one_at_a_time' => 'Untick one item at a time to change it, or untick all to cancel.',
         'install_custom' => 'Install with these settings',
         'site' => 'Change the site address',
         'packages' => 'Choose packages and theme',
@@ -177,7 +206,12 @@ return [
         'services_site' => 'Capell Services',
     ],
     'handoff' => [
-        'title' => 'What next',
+        'completed_title' => 'Installation complete',
+        'incomplete_title' => 'Installation needs attention',
+        'warnings_title' => 'Items to review',
+        'build_prompt' => 'Install dependencies and build frontend assets now?',
+        'build_hint' => 'Runs the frontend preparation and production build. Choose No to run it later.',
+        'title' => 'Next steps',
         'tips' => [
             'review' => [
                 'label' => 'Review',

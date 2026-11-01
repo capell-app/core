@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Capell\Core\Enums\Health;
 
+/** @experimental */
 enum HealthStatus: string
 {
     case Healthy = 'healthy';

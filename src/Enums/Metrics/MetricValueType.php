@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Capell\Core\Enums\Metrics;
 
+/** @experimental */
 enum MetricValueType: string
 {
     case Integer = 'integer';

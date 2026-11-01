@@ -7,6 +7,7 @@ namespace Capell\Core\Data\Database;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\Expression;
 
+/** @experimental */
 final readonly class SqlFragment
 {
     /**

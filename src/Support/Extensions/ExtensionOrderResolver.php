@@ -7,6 +7,7 @@ namespace Capell\Core\Support\Extensions;
 use Capell\Core\Data\Extensions\ExtensionOrderDiagnosticData;
 use LogicException;
 
+/** @experimental */
 final class ExtensionOrderResolver
 {
     /** @var list<ExtensionOrderDiagnosticData> */

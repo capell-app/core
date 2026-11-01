@@ -16,6 +16,8 @@ use Illuminate\Support\Facades\Facade;
  * @method static DatabasePlatform forConnection(?string $connectionName = null)
  *
  * @see DatabasePlatformRegistry
+ *
+ * @experimental
  */
 final class CapellDatabase extends Facade
 {

@@ -8,6 +8,7 @@ use Capell\Core\Data\Metrics\MetricCollectionResultData;
 use Capell\Core\Data\Metrics\MetricDefinitionData;
 use Capell\Core\Data\Metrics\MetricScopeData;
 
+/** @experimental */
 interface CollectsDailyMetrics
 {
     /** @return list<MetricDefinitionData> */

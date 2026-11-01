@@ -13,6 +13,8 @@ use Lorisleiva\Actions\Concerns\AsObject;
 /**
  * Acknowledge or resolve an incident for an assigned alias. The host must authenticate
  * the operator before invoking this action; invalid transitions return false.
+ *
+ * @experimental
  */
 final readonly class UpdateReportingIncidentAction
 {

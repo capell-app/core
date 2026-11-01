@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Capell\Core\Models;
 
+use Capell\Core\Concerns\HasCapellTable;
 use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Builder;
@@ -26,6 +27,7 @@ use Override;
  * @property int $record_id
  * @property string $context
  * @property array<string, mixed> $payload
+ * @property string|null $revision
  * @property string $content_hash
  * @property CarbonImmutable $saved_at
  * @property CarbonImmutable $expires_at
@@ -36,6 +38,8 @@ use Override;
  */
 final class EditorScratchDraft extends Model
 {
+    use HasCapellTable;
+
     /** @use HasFactory<Factory<self>> */
     use HasFactory;
 
@@ -49,6 +53,7 @@ final class EditorScratchDraft extends Model
         'context',
         'payload',
         'content_hash',
+        'revision',
         'saved_at',
         'expires_at',
     ];

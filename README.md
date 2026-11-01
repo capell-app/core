@@ -53,11 +53,11 @@ Use `php artisan list capell` in the host app to confirm the exact command set a
 
 - Provider: `Capell\Core\Providers\CapellServiceProvider`
 - Config: `config/capell.php`, `config/redirects.php`
-- Main models: `Page`, `PageUrl`, `Site`, `SiteDomain`, `Language`, `Layout`, `Theme`, `Blueprint`, `Type`, `Media`, `CapellExtension`, `UpgradeLogEntry`
+- Main models: `Page`, `PageUrl`, `Site`, `SiteDomain`, `Language`, `Layout`, `Theme`, `Blueprint`, `Media`, `CapellExtension`, `UpgradeLogEntry`
 - Main commands: `capell:install`, `capell:upgrade`, `capell:rollback`, `capell:doctor`, `capell:package-cache`, `capell:package-cache:clear`, `capell:publish-migrations`, `capell:delete-migrations`, `capell:publish-components`, `capell:make-*`
 - Test case support: `Capell\Core\Testing\ExtensionTestHarness`
 
-`Type` remains present for compatibility while the admin surface is moving toward Blueprint naming. New docs and UI copy should prefer Blueprint unless they are documenting a compatibility API that still uses type terminology.
+Type terminology survives only in compatibility APIs such as `PageTypeData`. New docs and UI copy should prefer Blueprint unless they are documenting one of those compatibility APIs.
 
 ## Extension Points
 
@@ -108,7 +108,7 @@ vendor/bin/pest tests/Arch tests/Unit/Manifest
 | Symfony HTML sanitizer     | `^7.0` or `^8.0`                                               |
 | Runtime                    | PHP-FPM; Laravel Octane with Swoole, RoadRunner, or FrankenPHP |
 
-Each Capell 1.x minor receives security fixes for 24 months from its release date, and the latest 1.x minor is always supported. Upgrade all installed Capell foundation packages together to the same supported release before requesting a fix. See the [Capell security policy](https://github.com/capell-app/capell/security/policy) for vulnerability reporting.
+Each Capell 1.x minor receives security fixes for at least 24 months from its release date. The latest 1.x minor remains supported while 1.x is current and for at least 12 months after the next major release. Upgrade all installed Capell foundation packages together to the same supported release before requesting a fix. See the [Capell security policy](https://github.com/capell-app/capell/security/policy) for vulnerability reporting.
 
 Support covers the dependency ranges above. When an upstream PHP, Laravel, Filament, or Symfony release reaches its own end of life earlier, upgrading that dependency may be required to receive a safe fix.
 

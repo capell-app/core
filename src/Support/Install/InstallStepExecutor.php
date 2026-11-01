@@ -8,6 +8,7 @@ use Capell\Core\Actions\Install\BuildInstallFrontendAssetsAction;
 use Capell\Core\Actions\Install\CallArtisanCommandAction;
 use Capell\Core\Actions\Install\ClearCachesAction;
 use Capell\Core\Actions\Install\CreateAdditionalInstallUsersAction;
+use Capell\Core\Actions\Install\FindTableCollisionsAction;
 use Capell\Core\Actions\Install\GenerateSitemapAction;
 use Capell\Core\Actions\Install\GrantInstallUserAdminAccessAction;
 use Capell\Core\Actions\Install\InstallDeveloperToolingAction;
@@ -50,6 +51,10 @@ final class InstallStepExecutor
 
     public function execute(string $stepKey, InstallRunState $state): InstallRunState
     {
+        if ($stepKey !== InstallPlan::STEP_PREFLIGHT_CHECKS) {
+            InstallRunState::rememberInitialInstallation($state->inputData->initialInstallation);
+        }
+
         config(['app.url' => $state->inputData->siteUrl]);
         InstallFilamentPanelAction::registerPanelProviders();
         CapellCore::clearExtensionCache();
@@ -57,9 +62,25 @@ final class InstallStepExecutor
         $stepFailed = false;
 
         try {
-            return $this->executeStep($stepKey, $state);
+            $result = $this->executeStep($stepKey, $state);
+            if ($state->inputData->initialInstallation && $stepKey !== InstallPlan::STEP_PREFLIGHT_CHECKS) {
+                InstallRunState::checkpointInitialInstallation();
+            }
+
+            if ($stepKey === InstallPlan::STEP_MARK_CORE_INSTALLED) {
+                InstallRunState::completeInitialInstallation();
+            }
+
+            return $result;
         } catch (Throwable $throwable) {
             $stepFailed = true;
+            try {
+                if ($state->inputData->initialInstallation && $stepKey !== InstallPlan::STEP_PREFLIGHT_CHECKS) {
+                    InstallRunState::checkpointInitialInstallation();
+                }
+            } catch (Throwable $checkpointFailure) {
+                report($checkpointFailure);
+            }
 
             throw $throwable;
         } finally {
@@ -75,6 +96,18 @@ final class InstallStepExecutor
                 }
             }
         }
+    }
+
+    private function runInitialMigrations(InstallRunState $state): void
+    {
+        $packages = array_values(array_unique([...$state->inputData->packages, ...$state->inputData->extraPackages]));
+        $collisions = FindTableCollisionsAction::run($packages);
+        if ($collisions !== []) {
+            $names = array_map(static fn ($collision): string => $collision->table, $collisions);
+            throw new RuntimeException((string) __('capell-core::install.tables.choice_required', ['tables' => implode(', ', $names)]));
+        }
+
+        RunMigrationsAction::run($state->reporter, includeSettings: false);
     }
 
     private function executeStep(string $stepKey, InstallRunState $state): InstallRunState
@@ -116,7 +149,7 @@ final class InstallStepExecutor
             InstallPlan::STEP_PUBLISH_VENDOR_MIGRATIONS, InstallPlan::STEP_PUBLISH_EXTRA_VENDOR_MIGRATIONS => PublishVendorMigrationsAction::run($state->reporter),
             InstallPlan::STEP_PUBLISH_CAPELL_MIGRATIONS => PublishCapellMigrationsAction::run($state->reporter, publishSettings: false),
             InstallPlan::STEP_PUBLISH_PACKAGE_MIGRATIONS => $this->publishPackageMigrations($state),
-            InstallPlan::STEP_RUN_MIGRATIONS_PRE => RunMigrationsAction::run($state->reporter, includeSettings: false),
+            InstallPlan::STEP_RUN_MIGRATIONS_PRE => $this->runInitialMigrations($state),
             InstallPlan::STEP_PUBLISH_CAPELL_SETTINGS_MIGRATIONS => $this->publishSettingsMigrations($state),
             InstallPlan::STEP_RUN_MIGRATIONS_MID => RunMigrationsAction::run($state->reporter),
             InstallPlan::STEP_RUN_MIGRATIONS_POST => $this->finalizeInstall($state),
@@ -489,17 +522,51 @@ final class InstallStepExecutor
 
     private function runDoctorSummaryInFreshProcess(InstallRunState $state): int
     {
-        return resolve(ArtisanSubprocessRunner::class)->run(
-            [
-                'capell:doctor',
-                '--install-summary',
-                '--skip-package-doctors',
-                '--no-interaction',
-            ],
-            function (string $line) use ($state): void {
-                $state->reporter->report($line);
-            },
-        );
+        $reportPath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'capell-doctor-' . bin2hex(random_bytes(16));
+        $reportFile = fopen($reportPath, 'x+b');
+        throw_unless(is_resource($reportFile), RuntimeException::class, 'Unable to create a temporary health report.');
+
+        try {
+            throw_unless(chmod($reportPath, 0600), RuntimeException::class, 'Unable to secure the temporary health report.');
+            fclose($reportFile);
+            $exitCode = resolve(ArtisanSubprocessRunner::class)->run(
+                [
+                    'capell:doctor',
+                    '--install-summary',
+                    '--skip-package-doctors',
+                    '--no-interaction',
+                    '--report-json=' . $reportPath,
+                ],
+                function (string $line) use ($state): void {
+                    $state->reporter->report($line);
+                },
+            );
+            $report = json_decode((string) file_get_contents($reportPath), true);
+            if ($exitCode === 0 && (! is_array($report) || ! is_array($report['checks'] ?? null))) {
+                $state->doctorWarnings[] = ['message' => 'The health report could not be read; run php artisan capell:doctor.', 'count' => 1];
+            } elseif (is_array($report) && is_array($report['checks'] ?? null)) {
+                foreach ($report['checks'] as $check) {
+                    if (! is_array($check)) {
+                        continue;
+                    }
+
+                    $count = $check['evidence']['warning_count'] ?? 0;
+                    if (is_int($count) && $count > 0 && is_string($check['message'] ?? null)) {
+                        $state->doctorWarnings[] = ['message' => $check['message'], 'count' => $count];
+                    } elseif (($check['passed'] ?? true) === false && ($check['severity'] ?? null) === 'warning' && is_string($check['message'] ?? null)) {
+                        $state->doctorWarnings[] = ['message' => $check['message'], 'count' => 1];
+                    }
+                }
+            }
+
+            return $exitCode;
+        } finally {
+            if (is_resource($reportFile)) {
+                fclose($reportFile);
+            }
+
+            unlink($reportPath);
+        }
     }
 
     private function syncAdminPermissions(InstallRunState $state): void

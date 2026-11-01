@@ -8,6 +8,7 @@ use Capell\Core\Enums\Reporting\IncidentStatus;
 use Capell\Core\Models\ReportingIncident;
 use Carbon\CarbonImmutable;
 
+/** @experimental */
 final readonly class ReportingIncidentData
 {
     /** @param array<string, string> $deliveries */

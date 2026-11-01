@@ -6,6 +6,7 @@ namespace Capell\Core\Support\Extensions;
 
 use InvalidArgumentException;
 
+/** @experimental */
 final readonly class ExtensionPosition
 {
     private function __construct(

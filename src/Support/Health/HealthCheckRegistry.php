@@ -9,6 +9,7 @@ use Illuminate\Contracts\Container\Container;
 use InvalidArgumentException;
 use LogicException;
 
+/** @experimental */
 final class HealthCheckRegistry
 {
     /** @var array<string, HealthCheck> */

@@ -6,6 +6,7 @@ namespace Capell\Core\Data\Database;
 
 use InvalidArgumentException;
 
+/** @experimental */
 final readonly class DatabaseIndexDefinition
 {
     /**

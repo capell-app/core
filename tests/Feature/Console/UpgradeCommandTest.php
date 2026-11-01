@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Capell\Core\Tests\Feature\Console;
 
+use Capell\Core\Actions\Install\FindTableCollisionsAction;
+use Capell\Core\Actions\Upgrade\ReadLatestInstalledVersionsAction;
+use Capell\Core\Actions\Upgrade\ResolveAdminViewDirectoryAction;
+use Capell\Core\Actions\Upgrade\ResolveInstalledComposerVersionsAction;
 use Capell\Core\Facades\CapellCore;
 use Capell\Core\Models\UpgradeLogEntry;
 use Capell\Core\Models\UpgradeRun;
@@ -134,6 +138,7 @@ it('reports readiness warnings successfully without creating upgrade state', fun
         ->expectsOutputToContain('Installed package migrations')
         ->expectsOutputToContain('Pending upgrade steps')
         ->expectsOutputToContain('Manifest audit')
+        ->expectsOutputToContain('Published Admin views')
         ->expectsOutputToContain('Backup prerequisite: unknown')
         ->expectsOutputToContain('Migration irreversibility: unknown')
         ->assertSuccessful();
@@ -147,6 +152,40 @@ it('reports readiness warnings successfully without creating upgrade state', fun
 
     $cacheSpy->shouldNotHaveReceived('lock');
     Process::assertNothingRan();
+});
+
+it('reports the versioned upgrade guidance for the installed range', function (): void {
+    ResolveInstalledComposerVersionsAction::mock()->shouldReceive('handle')->andReturn(['capell-app/core' => '1.0.0']);
+    UpgradeLogEntry::query()->create([
+        'type' => 'version_snapshot', 'key' => 'capell-app/core', 'package' => 'capell-app/core',
+        'status' => 'recorded', 'ran_at' => now()->subDay(), 'meta' => ['to_version' => '0.9.0'],
+    ]);
+
+    artisanCommand('capell:upgrade', ['--dry-run' => true])
+        ->expectsOutputToContain('Versioned upgrade guide')
+        ->expectsOutputToContain('Back up the database, environment and storage')
+        ->assertSuccessful();
+});
+
+it('reports published Admin view differences during a dry run without changing them', function (): void {
+    $originalBase = app()->basePath();
+    $root = sys_get_temp_dir() . '/capell-upgrade-view-drift-' . bin2hex(random_bytes(8));
+    File::makeDirectory($root . '/resources/views/vendor/capell-admin/components', 0755, true);
+    File::makeDirectory($root . '/admin/resources/views/components', 0755, true);
+    File::put($root . '/resources/views/vendor/capell-admin/components/example.blade.php', 'custom');
+    File::put($root . '/admin/resources/views/components/example.blade.php', 'upstream fix');
+    ResolveAdminViewDirectoryAction::mock()->shouldReceive('handle')->andReturn($root . '/admin/resources/views');
+    app()->setBasePath($root);
+
+    try {
+        artisanCommand('capell:upgrade', ['--dry-run' => true])
+            ->expectsOutputToContain('Review differing override: components/example.blade.php')
+            ->assertSuccessful();
+        expect(File::get($root . '/resources/views/vendor/capell-admin/components/example.blade.php'))->toBe('custom');
+    } finally {
+        app()->setBasePath($originalBase);
+        File::deleteDirectory($root);
+    }
 });
 
 it('reports an unregistered package source migration as pending', function (): void {
@@ -202,6 +241,10 @@ it('audits manifest declarations without autoloading extension classes', functio
         artisanCommand('capell:upgrade', ['--dry-run' => true])
             ->expectsOutputToContain('capell-app/report-only-manifest: capellApiVersion does not include 1.1.0.')
             ->assertSuccessful();
+
+        artisanCommand('capell:upgrade', ['--dry-run' => true, '--strict' => true])
+            ->expectsOutputToContain('capell-app/report-only-manifest: capellApiVersion does not include 1.1.0.')
+            ->assertFailed();
 
         expect(file_exists($markerPath))->toBeFalse();
     } finally {
@@ -327,4 +370,60 @@ it('clears all caches when forced without an explicit cache selection', function
     artisanCommand('capell:upgrade', ['--force' => true])
         ->doesntExpectOutputToContain('No cache selection provided; skipping cache clearing.')
         ->assertSuccessful();
+});
+
+it('rejects strict mode without a dry run before starting an upgrade', function (): void {
+    artisanCommand('capell:upgrade', ['--strict' => true, '--force' => true])
+        ->expectsOutputToContain('--strict requires --dry-run.')
+        ->assertFailed();
+
+    expect(CmdTrackedStep::$runs)->toBe(0)
+        ->and(UpgradeRun::query()->count())->toBe(0);
+});
+
+it('recovers an aliased pages migration without adopting the foreign pages table', function (): void {
+    config()->set('capell.database.table_aliases.pages', 'content_pages');
+    $foreignCount = DB::table('pages')->count();
+    $migration = '2026_05_10_190832_12_create_pages_table';
+    DB::table('migrations')->where('migration', $migration)->delete();
+
+    artisanCommand('capell:upgrade', ['--force' => true, '--only-migrations' => true, '--no-clear-cache' => true])
+        ->assertSuccessful();
+
+    expect(Schema::hasTable('content_pages'))->toBeTrue()
+        ->and(DB::table('pages')->count())->toBe($foreignCount)
+        ->and(DB::table('migrations')->where('migration', $migration)->exists())->toBeTrue();
+});
+
+it('builds an upgrade plan with a prefixed Capell schema', function (): void {
+    DB::table('capell_upgrade_log')->insert([
+        'type' => 'version_snapshot', 'key' => 'capell-app/core', 'status' => 'success',
+        'ran_at' => '2026-01-01 00:00:00', 'meta' => json_encode(['to_version' => '1.0.0']),
+    ]);
+    $copied = [];
+    try {
+        foreach (resolve(FindTableCollisionsAction::class)->planned([]) as $table) {
+            if (! str_starts_with($table->configKey, 'capell.database.table_aliases.')) {
+                continue;
+            }
+
+            if (! Schema::hasTable($table->name)) {
+                continue;
+            }
+
+            $target = 'cms_' . $table->name;
+            $grammar = DB::connection()->getQueryGrammar();
+            DB::statement('CREATE TABLE ' . $grammar->wrap($target) . ' AS SELECT * FROM ' . $grammar->wrap($table->name));
+            $copied[] = $target;
+        }
+
+        config()->set('capell.database.table_prefix', 'cms_');
+        expect(ReadLatestInstalledVersionsAction::run(['capell-app/core']))->toBe(['capell-app/core' => '1.0.0']);
+        artisanCommand('capell:upgrade', ['--dry-run' => true, '--force' => true, '--no-clear-cache' => true])->assertSuccessful();
+    } finally {
+        config()->set('capell.database.table_prefix', '');
+        foreach ($copied as $table) {
+            Schema::dropIfExists($table);
+        }
+    }
 });

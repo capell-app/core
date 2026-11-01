@@ -6,6 +6,7 @@ namespace Capell\Core\Contracts\Database;
 
 use Capell\Core\Enums\Database\DatabaseFamily;
 
+/** @experimental */
 interface DatabasePlatform
 {
     public const string TAG = 'capell.database.platform';

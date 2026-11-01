@@ -50,6 +50,8 @@ use Spatie\LaravelData\Data;
  *
  * @see OutboundEventDefinitionData The definition contract itself.
  * @see PackageSurfaceRegistrar::outboundEvent() The registration entry point.
+ *
+ * @experimental
  */
 final class OutboundEventRegistry
 {

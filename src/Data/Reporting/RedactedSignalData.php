@@ -10,6 +10,7 @@ use Capell\Core\Support\Reporting\SignalRedactor;
 use InvalidArgumentException;
 use JsonSerializable;
 
+/** @experimental */
 final readonly class RedactedSignalData implements JsonSerializable
 {
     /** @param array<string, mixed> $context */

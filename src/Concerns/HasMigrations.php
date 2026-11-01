@@ -64,6 +64,7 @@ trait HasMigrations
             '2026_08_09_000001_add_port_to_site_domains_table',
             '2026_08_09_000002_enforce_active_site_domain_origin_uniqueness',
             '2026_08_13_000001_create_editor_scratch_drafts_table',
+            '2026_10_29_000002_add_revision_to_editor_scratch_drafts_table',
             '2026_08_13_000002_add_admin_workspace_preferences_to_users_table',
             '2026_08_14_000001_add_provider_recovery_to_capell_extensions',
             '2026_08_18_000001_create_activity_visitors_table',
@@ -80,6 +81,8 @@ trait HasMigrations
             '2026_09_29_000001_remove_implicit_timestamp_updates',
             '2026_10_05_000001_add_attribute_changes_to_activity_log_table',
             '2026_10_24_000001_create_site_domain_claim_locks_table',
+            '2026_10_29_000001_repair_admin_workspace_preferences_on_users_table',
+            '2026_10_29_000002_repair_ancillary_user_columns',
         ];
     }
 
