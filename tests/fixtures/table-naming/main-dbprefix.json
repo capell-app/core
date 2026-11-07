@@ -176,6 +176,13 @@
         ],
         "foreign_keys": []
     },
+    "capell_extension_quarantines": {
+        "indexes": [
+            "capell_extension_quarantines_composer_name_unique",
+            "primary"
+        ],
+        "foreign_keys": []
+    },
     "capell_extensions": {
         "indexes": [
             "capell_extensions_auto_update_policy_index",
@@ -215,6 +222,41 @@
             "capell_reporting_incidents_health_status_index",
             "capell_reporting_incidents_resolved_at_index",
             "sqlite_autoindex_dbp_capell_reporting_incidents_1"
+        ],
+        "foreign_keys": []
+    },
+    "capell_security_remediation_approvals": {
+        "indexes": [
+            "capell_security_remediation_approvals_weakness_id_unique",
+            "primary"
+        ],
+        "foreign_keys": []
+    },
+    "capell_security_remediation_runs": {
+        "indexes": [
+            "capell_security_remediation_runs_weakness_id_index",
+            "primary"
+        ],
+        "foreign_keys": [
+            {
+                "name": null,
+                "columns": ["finding_id"],
+                "foreign_schema": "main",
+                "foreign_table": "dbp_capell_security_weakness_findings",
+                "foreign_columns": ["id"]
+            }
+        ]
+    },
+    "capell_security_scan_runs": {
+        "indexes": ["sqlite_autoindex_dbp_capell_security_scan_runs_1"],
+        "foreign_keys": []
+    },
+    "capell_security_weakness_findings": {
+        "indexes": [
+            "capell_security_weakness_findings_fingerprint_unique",
+            "capell_security_weakness_findings_status_severity_index",
+            "capell_security_weakness_findings_weakness_id_index",
+            "primary"
         ],
         "foreign_keys": []
     },
@@ -790,6 +832,22 @@
     },
     "property_sets": {
         "indexes": ["primary", "property_sets_key_unique"],
+        "foreign_keys": []
+    },
+    "public_read_eligibility_state": {
+        "indexes": ["primary"],
+        "foreign_keys": []
+    },
+    "public_read_owed_withdrawals": {
+        "indexes": ["primary", "public_read_owed_withdrawals_unique"],
+        "foreign_keys": []
+    },
+    "public_read_projection_watermarks": {
+        "indexes": [
+            "primary",
+            "public_read_projection_watermarks_attempted",
+            "public_read_projection_watermarks_unique"
+        ],
         "foreign_keys": []
     },
     "redirect_health_snapshots": {
