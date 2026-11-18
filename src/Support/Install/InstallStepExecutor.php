@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Capell\Core\Support\Install;
 
+use Capell\Core\Actions\FirstRun\MarkFreshInstallSitesAction;
+use Capell\Core\Actions\FirstRun\RecordInstallSuiteAction;
 use Capell\Core\Actions\Install\BuildInstallFrontendAssetsAction;
+use Capell\Core\Actions\Install\BuildInstallResumeCommandAction;
 use Capell\Core\Actions\Install\CallArtisanCommandAction;
 use Capell\Core\Actions\Install\ClearCachesAction;
 use Capell\Core\Actions\Install\CreateAdditionalInstallUsersAction;
@@ -26,6 +29,7 @@ use Capell\Core\Actions\Install\ResolveInstallUserAction;
 use Capell\Core\Actions\Install\RunInstallPreflightChecksAction;
 use Capell\Core\Actions\Install\RunMigrationsAction;
 use Capell\Core\Contracts\AdminPermissionSynchronizer;
+use Capell\Core\Data\Install\InstallStoppedStepData;
 use Capell\Core\Data\PackageData;
 use Capell\Core\Enums\ExtensionStatusEnum;
 use Capell\Core\Events\CapellInstallationCompleted;
@@ -69,6 +73,7 @@ final class InstallStepExecutor
 
             if ($stepKey === InstallPlan::STEP_MARK_CORE_INSTALLED) {
                 InstallRunState::completeInitialInstallation();
+                InstallRunState::clearStoppedStep();
             }
 
             return $result;
@@ -81,6 +86,8 @@ final class InstallStepExecutor
             } catch (Throwable $checkpointFailure) {
                 report($checkpointFailure);
             }
+
+            $this->rememberStoppedStep($stepKey, $state);
 
             throw $throwable;
         } finally {
@@ -98,10 +105,25 @@ final class InstallStepExecutor
         }
     }
 
+    private function rememberStoppedStep(string $stepKey, InstallRunState $state): void
+    {
+        try {
+            InstallRunState::recordStoppedStep(new InstallStoppedStepData(
+                key: $stepKey,
+                label: InstallPlan::labelForStep(InstallPlan::build($state->inputData), $stepKey),
+                resumeCommand: $state->resumeCommand ?? BuildInstallResumeCommandAction::run($state->inputData),
+                passwordOmitted: $state->passwordOmitted,
+            ));
+        } catch (Throwable $throwable) {
+            // Recording is diagnostic only; it must not replace the step failure.
+            report($throwable);
+        }
+    }
+
     private function runInitialMigrations(InstallRunState $state): void
     {
         $packages = array_values(array_unique([...$state->inputData->packages, ...$state->inputData->extraPackages]));
-        $collisions = FindTableCollisionsAction::run($packages);
+        $collisions = FindTableCollisionsAction::run($packages, $state->inputData->legacyTables);
         if ($collisions !== []) {
             $names = array_map(static fn ($collision): string => $collision->table, $collisions);
             throw new RuntimeException((string) __('capell-core::install.tables.choice_required', ['tables' => implode(', ', $names)]));
@@ -235,6 +257,7 @@ final class InstallStepExecutor
         InstallDeveloperToolingAction::run(
             $state->reporter,
             $state->inputData->configureBoostDeveloperTooling,
+            $state->inputData->developerToolingPackage,
         );
 
         $this->registerComposerDiscoveredProviders();
@@ -553,7 +576,7 @@ final class InstallStepExecutor
                     $count = $check['evidence']['warning_count'] ?? 0;
                     if (is_int($count) && $count > 0 && is_string($check['message'] ?? null)) {
                         $state->doctorWarnings[] = ['message' => $check['message'], 'count' => $count];
-                    } elseif (($check['passed'] ?? true) === false && ($check['severity'] ?? null) === 'warning' && is_string($check['message'] ?? null)) {
+                    } elseif (($check['outcome'] ?? null) === 'warning' && is_string($check['message'] ?? null)) {
                         $state->doctorWarnings[] = ['message' => $check['message'], 'count' => 1];
                     }
                 }
@@ -635,7 +658,15 @@ final class InstallStepExecutor
             ],
         );
 
+        RecordInstallSuiteAction::run($state->inputData->suiteKey);
+
         Event::dispatch(new CapellInstallationCompleted);
+
+        // Last, after every package has seeded its pages: only a site a first install made is offered guided setup.
+        // A demo install is built content, not a blank site, so it is never offered setup.
+        if ($state->inputData->initialInstallation && ! $state->inputData->demoContent) {
+            MarkFreshInstallSitesAction::run();
+        }
 
         $state->reporter->report('✓ Installation complete!');
     }

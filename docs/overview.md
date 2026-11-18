@@ -2,7 +2,7 @@
 
 ## What This Package Adds
 
-**Available. Foundation package. Schema-owning.**
+**Available. Foundation package.**
 
 Capell Core provides the shared domain layer for the package-based CMS foundation. It owns the records and contracts that Admin, Frontend, Installer, Marketplace, and optional Capell packages build on.
 
@@ -15,7 +15,7 @@ Core extends these Capell surfaces:
 - Console operations for install, doctor checks, package cache, extension install/uninstall, migration publishing, makers, and upgrades.
 - Package integration through `capell.json`, `CapellCore`, settings classes, subscribers, and extension registries.
 
-## Why It Matters
+## What Core gives developers and teams
 
 - **For developers:** Core is the stable Laravel boundary for content records, migrations, package metadata, upgrade orchestration, and extension points. It gives package developers typed models, Actions, Data objects, settings support, cache helpers, and registry contracts instead of requiring direct changes to the host app.
 - **For teams:** Core keeps the CMS foundation predictable. Editors work in Admin, public pages render through Frontend, and site operations use one shared set of content, package, and upgrade records.
@@ -28,7 +28,7 @@ Select either screenshot to open the full-resolution image.
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="images/screenshots/core-page-structure-dark.png"><img src="images/screenshots/core-page-structure.png" alt="Pages list showing Core page hierarchy and publishing state"></picture><br>[Light](images/screenshots/core-page-structure.png) · [Dark](images/screenshots/core-page-structure-dark.png) | <picture><source media="(prefers-color-scheme: dark)" srcset="images/screenshots/core-settings-backed-configuration-dark.png"><img src="images/screenshots/core-settings-backed-configuration.png" alt="Settings interface backed by Core configuration records"></picture><br>[Light](images/screenshots/core-settings-backed-configuration.png) · [Dark](images/screenshots/core-settings-backed-configuration-dark.png) |
 
-Screenshot contract:
+Screenshots:
 
 - Admin index screen: shown through Admin resources that read Core records, especially Pages, Sites, Layouts, Themes, Media, and Extensions.
 - Create/edit screen: shown through Admin resources; Core owns the records and validation contracts, not the Filament pages.

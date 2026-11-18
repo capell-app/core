@@ -129,6 +129,14 @@
             "c6c5034d8d5f11c54371c2a502b5b6ae8312ca54917714f537071b3d2876e94d"
         ]
     },
+    "create_capell_ai_provenance_table": {
+        "names": [
+            "2026_11_14_000010_create_capell_ai_provenance_table"
+        ],
+        "sha256": [
+            "472c8a0d9972837982145eff3f205e41826a98dc9a04c476fc620c33a7ec5ef6"
+        ]
+    },
     "create_capell_extension_health_alerts_table": {
         "names": [
             "2026_05_10_190832_27_create_capell_extension_health_alerts_table"
@@ -155,6 +163,23 @@
             "74722ebff3b5a3acd8cee355838c15ab855ac0078038db90b7628936ed20636f",
             "89f907aa51588eb938689818a8d5c09293bf46dd3c8de757882f39d66e859510",
             "9a7e56d13c8483c0a682b055e0a7b33616180b0236372f39fe0eac16bab977ee"
+        ]
+    },
+    "create_capell_idempotency_keys_table": {
+        "names": [
+            "2026_11_15_000010_create_capell_idempotency_keys_table"
+        ],
+        "sha256": [
+            "3eb2b6a235a94521fc2d3d129518a62bcff94e41163866b5be7c1f6a12c37b66"
+        ]
+    },
+    "create_capell_inbound_webhook_events_table": {
+        "names": [
+            "2026_11_12_000001_create_capell_inbound_webhook_events_table"
+        ],
+        "sha256": [
+            "0e36fac65426619ef4c94db95b8c9fca31f439d8c66d2294eb581342cf7123bb",
+            "5be34950d42c159d1f8a0770984f28a210952e6032bfac9357030676e3c2a6cc"
         ]
     },
     "create_capell_marketplace_installs_table": {

@@ -28,7 +28,7 @@ Core does not own:
 - the Filament admin panel, resources, dashboard surfaces, and editor workflow; that is `capell-app/admin`
 - public request handling and public HTML rendering; that is `capell-app/frontend`
 - browser installer routes and setup removal; that is `capell-app/installer`
-- catalogue browsing, account linking, and install authorization; that is `capell-app/marketplace`
+- catalogue browsing, account linking, and install authorisation; that is `capell-app/marketplace`
 - visual layout building, frontend authoring, generated HTML cache, SEO, blog, navigation, or migration/recovery features; those live in add-on packages
 
 ## Install
@@ -77,7 +77,7 @@ When adding a Core migration, also append it to `src/Concerns/HasMigrations.php`
 
 ## Data And Persistence
 
-Core is schema-owning. It creates the tables used by most Capell packages, including page, site, language, layout, theme, blueprint, media, extension, redirect, and upgrade state.
+Core creates the tables used by most Capell packages, including page, site, language, layout, theme, blueprint, media, extension, redirect, and upgrade state.
 
 Settings migrations are part of package installation and must be idempotent. Wrap new settings migrations in existence checks so upgrades and fresh installs behave the same way.
 
@@ -105,7 +105,6 @@ vendor/bin/pest tests/Arch tests/Unit/Manifest
 | Laravel                    | `^13.0`                                                        |
 | Filament support           | `^5.7.6`                                                       |
 | Symfony filesystem/process | `^7.2` or `^8.0`                                               |
-| Symfony HTML sanitizer     | `^7.0` or `^8.0`                                               |
 | Runtime                    | PHP-FPM; Laravel Octane with Swoole, RoadRunner, or FrankenPHP |
 
 Each Capell 1.x minor receives security fixes for at least 24 months from its release date. The latest 1.x minor remains supported while 1.x is current and for at least 12 months after the next major release. Upgrade all installed Capell foundation packages together to the same supported release before requesting a fix. See the [Capell security policy](https://github.com/capell-app/capell/security/policy) for vulnerability reporting.
@@ -117,13 +116,13 @@ Support covers the dependency ranges above. When an upstream PHP, Laravel, Filam
 - Missing package surfaces usually mean Composer discovery or the Capell package cache is stale. Run `composer dump-autoload`, then `php artisan capell:package-cache:clear`.
 - New migrations that work in tests but not on install are usually missing from `HasMigrations::getMigrations()`.
 - Missing default page records or Blueprint warnings should be checked with `php artisan capell:doctor` before changing seed or setup code.
-- Do not document moved features as Core behavior. Publishing Studio, generated HTML cache, site discovery, frontend authoring, SEO, blog, navigation, and Migration Assistant workflows are package-owned.
+- Do not document moved features as Core behaviour. Publishing Studio, generated HTML cache, site discovery, frontend authoring, SEO, blog, navigation, and Migration Assistant workflows are package-owned.
 
 ## Development
 
 Package development and coordinated verification happen in the [capell-app/capell monorepo](https://github.com/capell-app/capell). Split package repositories are release mirrors; use [docs.capell.app](https://docs.capell.app) for cross-package guidance. See the [contribution guide](https://github.com/capell-app/capell/blob/main/CONTRIBUTING.md), [security policy](https://github.com/capell-app/capell/security/policy), and [licence](https://github.com/capell-app/capell/blob/main/LICENSE.md).
 
-## Further Reading
+## Related guides
 
 | Page                                                             | Covers                                                       |
 | ---------------------------------------------------------------- | ------------------------------------------------------------ |
@@ -131,12 +130,12 @@ Package development and coordinated verification happen in the [capell-app/capel
 | [Page management](docs/page-management.md)                       | Pages, URLs, types, and publishing state.                    |
 | [Content management](docs/content-management.md)                 | Shared content records and ownership boundaries.             |
 | [Extending Capell](docs/extending-capell.md)                     | Core contracts and extension surfaces.                       |
-| [Cache](docs/cache.md)                                           | Shared cache helpers and invalidation behavior.              |
+| [Cache](docs/cache.md)                                           | Shared cache helpers and invalidation behaviour.             |
 | [Multi-site and multi-lingual](docs/multi-site-multi-lingual.md) | Sites, domains, languages, and localized URLs.               |
 | [Relationship diagnostics](docs/relationship-diagnostics.md)     | Debug missing active site domains for page URL rendering.    |
 | [Subscriber manager](docs/subscriber-manager.md)                 | Lifecycle subscription registration.                         |
 | [Static-site extensions](docs/static-site-extensions.md)         | Static export integration points.                            |
-| [Authoring upgrade steps](docs/authoring-upgrade-steps.md)       | Upgrading packages that integrate authoring behavior.        |
+| [Authoring upgrade steps](docs/authoring-upgrade-steps.md)       | Upgrading packages that integrate authoring behaviour.       |
 | [Install debugging](docs/install-debugging.md)                   | Common install and setup failures.                           |
 | [Agent schema](docs/agent-schema.md)                             | Public agent declarations, reads, limits, and audit meaning. |
 

@@ -11,12 +11,15 @@ use Capell\Core\Enums\ExtensionProviderRecoveryStateEnum;
 use Capell\Core\Enums\ExtensionStatusEnum;
 use Capell\Core\Models\CapellExtension;
 use Capell\Core\Support\Database\RuntimeSchemaState;
+use Capell\Core\Support\Marketplace\ExtensionCommercialPolicy;
 use Capell\Core\Support\TableName;
 use Illuminate\Support\Collection;
 use Throwable;
 
 final class ExtensionLifecycleRepository
 {
+    public const string ACTIVATION_PENDING_KEY = 'activation_pending';
+
     /** @var array<string, ExtensionStatusEnum|null> */
     private array $statusCache = [];
 
@@ -72,6 +75,22 @@ final class ExtensionLifecycleRepository
         return $this->runtimeGateCache[$name]?->allowed;
     }
 
+    /** @param Collection<string, PackageData> $packages */
+    public function commerciallyAuthorised(string $name, Collection $packages): bool
+    {
+        $extension = $this->record($name, $packages);
+        $policy = resolve(ExtensionCommercialPolicy::class);
+        if (! $policy->requiresAuthorisation($name, $extension)) {
+            return true;
+        }
+
+        if (! $extension instanceof CapellExtension) {
+            return $policy->isLocalDevelopment($name);
+        }
+
+        return $this->runtimeGateAllows($name, $packages) === true;
+    }
+
     public function recordInstalled(string $name, ?PackageData $package, ?string $actor = null): void
     {
         if (! $this->writableTableExists()) {
@@ -123,7 +142,11 @@ final class ExtensionLifecycleRepository
         string $reason,
         ?PackageData $package,
     ): void {
-        if (! $this->writableTableExists()) {
+        // Quarantine runs while providers register, so an unreachable database must
+        // not turn a contained provider failure into a failed boot. The caller keeps
+        // the in-memory quarantine; the record is written only when the table can be
+        // probed, and is not retried until the next boot that can reach the database.
+        if (! $this->tableExists(refresh: true)) {
             return;
         }
 
@@ -191,6 +214,51 @@ final class ExtensionLifecycleRepository
                 'metadata' => array_merge($existingMetadata, $this->packageMetadata($package), $metadata),
             ],
         );
+    }
+
+    /**
+     * Records that an installed extension has not finished activating: its
+     * lifecycle work is done, but the component cache refresh, installed
+     * notifications or event have not all completed. A retried install runs
+     * only that activation, never the lifecycle work again.
+     */
+    public function markActivationPending(string $name, bool $pending): void
+    {
+        if (! $this->writableTableExists()) {
+            return;
+        }
+
+        $extension = CapellExtension::query()->where('composer_name', $name)->first();
+
+        if (! $extension instanceof CapellExtension) {
+            return;
+        }
+
+        $metadata = is_array($extension->metadata) ? $extension->metadata : [];
+
+        if ($pending) {
+            $metadata[self::ACTIVATION_PENDING_KEY] = true;
+        } else {
+            unset($metadata[self::ACTIVATION_PENDING_KEY]);
+        }
+
+        $extension->forceFill(['metadata' => $metadata])->save();
+        unset($this->recordCache[$name]);
+    }
+
+    public function isActivationPending(string $name): bool
+    {
+        if (! $this->tableExists()) {
+            return false;
+        }
+
+        $metadata = CapellExtension::query()->where('composer_name', $name)->value('metadata');
+
+        if (is_string($metadata)) {
+            $metadata = json_decode($metadata, true);
+        }
+
+        return is_array($metadata) && ($metadata[self::ACTIVATION_PENDING_KEY] ?? false) === true;
     }
 
     public function delete(string $name): void

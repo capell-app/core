@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Capell\Core\Actions\GetPluginsAction;
 use Capell\Core\Facades\CapellCore;
+use Capell\Core\Support\Packages\BundledFoundationCatalogue;
 use Capell\Core\Support\Packages\TrustedCorePackages;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
@@ -23,10 +24,10 @@ it('returns plugin list with none installed', function (): void {
 
     $nonTrustedPlugins = $plugins
         ->pluck('name')
-        ->reject(fn (string $packageName): bool => TrustedCorePackages::contains($packageName))
+        ->reject(fn (string $packageName): bool => TrustedCorePackages::contains($packageName) || BundledFoundationCatalogue::contains($packageName))
         ->values();
 
     expect($plugins)
         ->toBeInstanceOf(Collection::class)
-        ->and($nonTrustedPlugins->all())->toBe(['capell-app/welcome-tour']);
+        ->and($nonTrustedPlugins->all())->toBe([]);
 });

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Capell\Core\Support\Install;
 
 use Capell\Core\Actions\Install\DetectInitialInstallationAction;
+use Capell\Core\Actions\Install\FindTableCollisionsAction;
 use Capell\Core\Data\InstallInputData;
 use Capell\Core\Data\NewUserData;
 use Capell\Core\Data\PackageData;
@@ -33,6 +34,9 @@ final class InstallInputFactory
             : null;
 
         $demoContent = (bool) ($validated['demo_content'] ?? false);
+        $siteName = is_string($validated['site_name'] ?? null) && trim($validated['site_name']) !== ''
+            ? trim($validated['site_name'])
+            : null;
         $packageSelectionMode = $this->packageSelectionMode($validated);
         $availablePackages = CapellCore::getPackages();
         $selectedPackages = $this->packageWorkflowPlanner
@@ -73,6 +77,8 @@ final class InstallInputFactory
             ? $this->exampleRoleUsers($this->roleUserPassword($validated, $newUser))
             : [];
 
+        $catalogueFacts = $this->catalogueFacts($installDeveloperTooling, $selectedInstallPackageNames);
+
         return new InstallInputData(
             siteUrl: (string) $validated['site_url'],
             packages: $selectedPackages,
@@ -81,7 +87,7 @@ final class InstallInputFactory
             cachesToClear: [],
             generateSitemap: (bool) ($validated['generate_sitemap'] ?? false),
             generateStaticSite: false,
-            demoSites: $demoContent ? [config('app.name', 'Capell Application')] : null,
+            demoSites: $demoContent ? [$siteName ?? config('app.name', 'Capell Application')] : null,
             demoLanguages: $demoContent ? [(string) $validated['language']] : null,
             userId: $existingUserId,
             newUser: $newUser,
@@ -101,6 +107,9 @@ final class InstallInputFactory
             additionalUsers: $additionalUsers,
             selectedThemeKey: resolve(ThemePackageCandidates::class)->inputThemeKey($selectedThemeKey),
             initialInstallation: DetectInitialInstallationAction::run(),
+            siteName: $siteName,
+            developerToolingPackage: $catalogueFacts['developerToolingPackage'],
+            legacyTables: $catalogueFacts['legacyTables'],
         );
     }
 
@@ -136,7 +145,13 @@ final class InstallInputFactory
         array $additionalUsers = [],
         ?string $selectedThemeKey = null,
         array $extraPackages = [],
+        ?string $siteName = null,
+        ?string $presetKey = null,
+        bool $publish = false,
+        ?string $suiteKey = null,
     ): InstallInputData {
+        $catalogueFacts = $this->catalogueFacts($installDeveloperTooling, array_values(array_unique([...$packages, ...$extraPackages])));
+
         return new InstallInputData(
             siteUrl: $siteUrl,
             packages: $packages,
@@ -160,6 +175,12 @@ final class InstallInputFactory
             selectedThemeKey: $selectedThemeKey,
             seedDatabase: $seedDatabase,
             initialInstallation: DetectInitialInstallationAction::run(),
+            siteName: $siteName,
+            presetKey: $presetKey,
+            publish: $publish,
+            suiteKey: $suiteKey,
+            developerToolingPackage: $catalogueFacts['developerToolingPackage'],
+            legacyTables: $catalogueFacts['legacyTables'],
         );
     }
 
@@ -184,6 +205,21 @@ final class InstallInputFactory
                 password: $password,
                 roleName: 'editor',
             ),
+        ];
+    }
+
+    /**
+     * What the install steps need from the Marketplace catalogue, resolved now because the steps
+     * clear the cached catalogue and must not depend on the network.
+     *
+     * @param  list<string>  $packageNames
+     * @return array{developerToolingPackage: ?string, legacyTables: list<array{name: string, configKey: string, migration: string}>}
+     */
+    private function catalogueFacts(bool $installDeveloperTooling, array $packageNames): array
+    {
+        return [
+            'developerToolingPackage' => $installDeveloperTooling ? resolve(DeveloperToolingInstallationState::class)->toolingPackageName() : null,
+            'legacyTables' => resolve(FindTableCollisionsAction::class)->declaredLegacyTables($packageNames),
         ];
     }
 

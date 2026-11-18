@@ -12,7 +12,9 @@ use Capell\Core\Support\Bootstrap\CloudInstallContext;
 use Capell\Core\Support\Database\RuntimeSchemaState;
 use Capell\Core\Support\Extensions\ExtensionContributionReceiptContext;
 use Capell\Core\Support\Extensions\ExtensionContributionReceiptRegistry;
+use Capell\Core\Support\Extensions\ExtensionLifecycleRepository;
 use Capell\Core\Support\Manifest\CapellManifestData;
+use Capell\Core\Support\Marketplace\ExtensionCommercialPolicy;
 use Capell\Core\Support\Packages\InstalledRuntimeLifecycle;
 use Capell\Core\Support\Packages\TrustedCorePackages;
 use Capell\Core\Support\Runtime\RuntimeRoleProviderPolicy;
@@ -87,6 +89,8 @@ final class CapellPackageLoader
 
         foreach ($this->registry->all() as $manifest) {
             $runtimeProvidersSelected = $this->shouldLoadRuntimeProviders($manifest);
+            $snapshot = ProviderRegistrationSnapshot::take($this->app);
+            $packageProviders = [];
 
             foreach ($this->resolveProviders($manifest, $runtimeProvidersSelected) as $provider) {
                 try {
@@ -105,6 +109,7 @@ final class CapellPackageLoader
                         fn (): mixed => $this->app->register($provider),
                     ));
                     $loadedProviders[] = $provider;
+                    $packageProviders[] = $provider;
                     foreach ($contexts as $context) {
                         $this->receipts->rememberProviderContext($provider, $context);
                     }
@@ -128,6 +133,9 @@ final class CapellPackageLoader
                         provider: $provider,
                         reason: $this->providerFailureReason($provider, $throwable),
                     );
+
+                    $snapshot?->restore();
+                    $loadedProviders = array_values(array_diff($loadedProviders, $packageProviders));
 
                     break;
                 }
@@ -185,6 +193,14 @@ final class CapellPackageLoader
     /** @return list<string> */
     private function resolveProviders(CapellManifestData $manifest, ?bool $runtimeProvidersSelected = null): array
     {
+        // Once issuer enforcement is on, an unauthorised commercial package loads no provider in
+        // any bucket, metadata included: its code does not run at all.
+        if (! TrustedCorePackages::contains($manifest->name)
+            && resolve(ExtensionCommercialPolicy::class)->enforcing()
+            && ! resolve(ExtensionLifecycleRepository::class)->commerciallyAuthorised($manifest->name, CapellCore::getPackages(withoutCore: false))) {
+            return [];
+        }
+
         $runtimeRole = $this->runtimeRoleResolver->role();
         $providers = $runtimeRole->loadsAuthoringProviders()
             ? [...$manifest->providers->metadata, ...$manifest->providers->install]

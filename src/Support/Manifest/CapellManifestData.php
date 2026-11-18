@@ -4,16 +4,20 @@ declare(strict_types=1);
 
 namespace Capell\Core\Support\Manifest;
 
+use Capell\Core\Data\Manifest\ExtensionCapabilityContractsData;
 use Capell\Core\Data\Manifest\ExtensionCommercialData;
 use Capell\Core\Data\Manifest\ExtensionContributionData;
 use Capell\Core\Data\Manifest\ExtensionContributionTraceabilityData;
 use Capell\Core\Data\Manifest\ExtensionDependencyData;
 use Capell\Core\Data\Manifest\ExtensionHealthCheckData;
+use Capell\Core\Data\Manifest\ExtensionInstallTipData;
+use Capell\Core\Data\Manifest\ExtensionLegacyTableData;
 use Capell\Core\Data\Manifest\ExtensionPerformanceBudgetData;
 use Capell\Core\Data\Manifest\ExtensionProviderData;
 use Capell\Core\Data\Manifest\ExtensionScreenshotData;
 use Capell\Core\Data\Manifest\ExtensionSecurityData;
 use Capell\Core\Enums\ExtensionManifestVersion;
+use Capell\Core\Enums\PackageRole;
 use Capell\Core\Support\Manifest\Exceptions\InvalidManifestException;
 use Illuminate\Support\ServiceProvider;
 
@@ -36,6 +40,10 @@ final class CapellManifestData
      * @param  list<string>  $marketplaceCategories
      * @param  list<string>  $scopes
      * @param  list<array<string, mixed>>  $agentTools
+     * @param  array<string, string>  $privacyPurposes  consent purpose => category, from privacy.purposes
+     * @param  list<PackageRole>  $roles
+     * @param  list<ExtensionInstallTipData>  $installTips
+     * @param  list<ExtensionLegacyTableData>  $legacyTables
      */
     public function __construct(
         public int $manifestVersion,
@@ -84,6 +92,12 @@ final class CapellManifestData
         public ?ExtensionContributionTraceabilityData $contributionTraceability = null,
         public array $agentTools = [],
         public ?string $agentToolsWaiverReason = null,
+        public ?ExtensionCapabilityContractsData $capabilityContracts = null,
+        public array $privacyPurposes = [],
+        public array $roles = [],
+        public int $rolePriority = 0,
+        public array $installTips = [],
+        public array $legacyTables = [],
     ) {}
 
     /** @param array<string, mixed> $data */
@@ -164,6 +178,20 @@ final class CapellManifestData
                 : null,
             agentTools: $agentTools,
             agentToolsWaiverReason: $agentToolsWaiverReason,
+            capabilityContracts: is_array($data['capabilityContracts'] ?? null)
+                ? ExtensionCapabilityContractsData::fromArray($data['capabilityContracts'])
+                : null,
+            privacyPurposes: self::privacyPurposes($data['privacy'] ?? null),
+            roles: self::roles($data['roles'] ?? null),
+            rolePriority: is_int($data['rolePriority'] ?? null) ? $data['rolePriority'] : 0,
+            installTips: array_map(
+                ExtensionInstallTipData::fromArray(...),
+                self::arrayList(is_array($data['install'] ?? null) ? ($data['install']['tips'] ?? null) : null),
+            ),
+            legacyTables: array_map(
+                ExtensionLegacyTableData::fromArray(...),
+                self::arrayList(is_array($data['install'] ?? null) ? ($data['install']['legacyTables'] ?? null) : null),
+            ),
         );
     }
 
@@ -227,6 +255,14 @@ final class CapellManifestData
             $data['scopes'] = $this->scopes;
         }
 
+        if ($this->capabilityContracts instanceof ExtensionCapabilityContractsData) {
+            $data['capabilityContracts'] = $this->capabilityContracts->toArray();
+        }
+
+        if ($this->privacyPurposes !== []) {
+            $data['privacy'] = ['purposes' => $this->privacyPurposes];
+        }
+
         if ($this->namespace !== null) {
             $data['namespace'] = $this->namespace;
         }
@@ -249,6 +285,29 @@ final class CapellManifestData
 
         if ($this->defaultSelected) {
             $data['defaultSelected'] = true;
+        }
+
+        if ($this->roles !== []) {
+            $data['roles'] = array_map(static fn (PackageRole $role): string => $role->value, $this->roles);
+        }
+
+        if ($this->rolePriority !== 0) {
+            $data['rolePriority'] = $this->rolePriority;
+        }
+
+        $install = [
+            ...($this->installTips !== [] ? ['tips' => array_map(
+                static fn (ExtensionInstallTipData $tip): array => $tip->toArray(),
+                $this->installTips,
+            )] : []),
+            ...($this->legacyTables !== [] ? ['legacyTables' => array_map(
+                static fn (ExtensionLegacyTableData $table): array => $table->toArray(),
+                $this->legacyTables,
+            )] : []),
+        ];
+
+        if ($install !== []) {
+            $data['install'] = $install;
         }
 
         if ($this->demo) {
@@ -377,6 +436,49 @@ final class CapellManifestData
 
         /** @var class-string<ServiceProvider> $provider */
         return $provider;
+    }
+
+    /**
+     * The string purpose => category pairs of privacy.purposes, sorted by purpose.
+     * ManifestValidator checks the names and categories; this only keeps strings.
+     *
+     * @return array<string, string>
+     */
+    private static function privacyPurposes(mixed $privacy): array
+    {
+        $purposes = is_array($privacy) && is_array($privacy['purposes'] ?? null) ? $privacy['purposes'] : [];
+        $declared = [];
+
+        foreach ($purposes as $purpose => $category) {
+            if (is_string($purpose) && is_string($category)) {
+                $declared[$purpose] = $category;
+            }
+        }
+
+        ksort($declared);
+
+        return $declared;
+    }
+
+    /**
+     * Known roles only, in declaration order. ManifestValidator rejects unknown values;
+     * this skips them so a manifest read without validation still hydrates.
+     *
+     * @return list<PackageRole>
+     */
+    private static function roles(mixed $value): array
+    {
+        $roles = [];
+
+        foreach (self::stringList($value) as $role) {
+            $resolved = PackageRole::tryFrom($role);
+
+            if ($resolved instanceof PackageRole && ! in_array($resolved, $roles, true)) {
+                $roles[] = $resolved;
+            }
+        }
+
+        return $roles;
     }
 
     private static function stringValue(mixed $value): ?string

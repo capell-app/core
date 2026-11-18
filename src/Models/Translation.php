@@ -6,6 +6,7 @@ namespace Capell\Core\Models;
 
 use Awobaz\Compoships\Compoships;
 use Capell\Core\Actions\Content\ExtractTextContentAction;
+use Capell\Core\Actions\Translations\RecordTranslationSourceFingerprintsAction;
 use Capell\Core\Casts\DynamicContentCast;
 use Capell\Core\Concerns\HasCapellMedia;
 use Capell\Core\Concerns\HasCapellTable;
@@ -174,6 +175,24 @@ class Translation extends Model implements HasMedia, HasMediaContract, Userstamp
         return $this->morphTo();
     }
 
+    /**
+     * The record that owns media used by this translation's content. When the translatable record holds media (a
+     * page, widget or layout), every language attaches to and references that one item, and per-language alt text
+     * lives in the media item's own translations. Otherwise the translation keeps its media itself.
+     *
+     * @return Model&HasMedia
+     */
+    public function mediaOwner(): Model
+    {
+        if ($this->translatable_type !== null && $this->translatable_id !== null) {
+            $this->loadMissing('translatable');
+        }
+
+        $owner = $this->relationLoaded('translatable') ? $this->getRelation('translatable') : null;
+
+        return $owner instanceof Model && $owner instanceof HasMedia ? $owner : $this;
+    }
+
     /** @return BelongsTo<PageUrl, $this> */
     public function pageUrl(): BelongsTo
     {
@@ -203,6 +222,14 @@ class Translation extends Model implements HasMedia, HasMediaContract, Userstamp
     {
         return $this->morphOne(Media::class, 'model')
             ->where('collection_name', MediaCollectionEnum::BackgroundImage->value);
+    }
+
+    #[Override]
+    protected static function booted(): void
+    {
+        static::saving(static function (Translation $translation): void {
+            RecordTranslationSourceFingerprintsAction::run($translation);
+        });
     }
 
     /** @return Attribute<string|null, never> */
@@ -314,6 +341,7 @@ class Translation extends Model implements HasMedia, HasMediaContract, Userstamp
     {
         return [
             'meta' => 'json',
+            'source_fingerprints' => 'array',
             'content' => DynamicContentCast::class,
         ];
     }

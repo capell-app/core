@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace Capell\Core\Actions;
 
+use Capell\Core\Actions\Translations\HydratePageLanguagesAction;
+use Capell\Core\Actions\Translations\ResolveLanguageFallbackChainAction;
+use Capell\Core\Actions\Translations\ResolveTranslationAction;
 use Capell\Core\Contracts\Pageable;
 use Capell\Core\Data\PublicPageFieldsData;
 use Capell\Core\Data\PublicPageResolutionData;
+use Capell\Core\Data\TranslationResolutionData;
 use Capell\Core\Enums\UrlTypeEnum;
 use Capell\Core\Models\Language;
 use Capell\Core\Models\Page;
@@ -39,13 +43,16 @@ class ResolvePublicPageByUrlAction
     ): PublicPageResolutionData {
         $normalizedUrl = $this->normalizeUrl($url);
 
+        $translatedUrl = null;
+
         $pageUrl = $this->usableResolvedPageUrl($resolvedPageUrl, $site, $language, $normalizedUrl)
-            ?? $this->resolvePageUrl($site, $language, $normalizedUrl);
+            ?? $this->resolvePageUrl($site, $language, $normalizedUrl)
+            ?? $this->resolveFallbackPageUrl($site, $language, $normalizedUrl, $translatedUrl);
 
         if (! $pageUrl instanceof PageUrl) {
             $this->logResolutionFailure($site, $normalizedUrl, 'no_matching_page_url');
 
-            return $this->missing($site, $language);
+            return $this->missing($site, $language, $translatedUrl);
         }
 
         $page = $this->resolvePage($pageUrl, $site, $language, $revisionPageId);
@@ -60,13 +67,20 @@ class ResolvePublicPageByUrlAction
             return $this->missing($site, $language);
         }
 
-        $translation = $page->translation;
+        // The requested language first, then its configured fallback chain. No
+        // translation on the chain is a 404: fallback is opt-in per language.
+        $resolution = ResolveTranslationAction::run($page, $language);
 
-        if (! $translation instanceof Translation) {
+        if (! $resolution instanceof TranslationResolutionData) {
             $this->logResolutionFailure($site, $normalizedUrl, 'no_translation');
 
             return $this->missing($site, $language);
         }
+
+        // `translations.language` is eager-loaded, so fallback content carries its own
+        // language whether or not that language has a URL for this page.
+        $translation = $resolution->translation;
+        $page->setRelation('translation', $translation);
 
         return new PublicPageResolutionData(
             page: $page,
@@ -79,6 +93,7 @@ class ResolvePublicPageByUrlAction
                 content: $translation->content,
                 meta: (array) $translation->meta,
             ),
+            translation: $resolution,
         );
     }
 
@@ -93,8 +108,10 @@ class ResolvePublicPageByUrlAction
         return UrlPathNormalizer::canonicalEncoding('/' . trim($url, '/'));
     }
 
-    private function resolvePageUrl(Site $site, Language $language, string $url): ?PageUrl
+    private function resolvePageUrl(Site $site, Language|int $language, string $url): ?PageUrl
     {
+        $languageId = $language instanceof Language ? $language->getKey() : $language;
+
         $publicPageableMorphTypes = ResolvePublicPageableMorphTypesAction::run();
 
         if ($publicPageableMorphTypes === []) {
@@ -103,7 +120,7 @@ class ResolvePublicPageByUrlAction
 
         return PageUrl::query()
             ->where('site_id', $site->getKey())
-            ->where('language_id', $language->getKey())
+            ->where('language_id', $languageId)
             ->where('url', $url)
             ->enabled()
             ->where(function (Builder $query): void {
@@ -118,6 +135,75 @@ class ResolvePublicPageByUrlAction
                 fn (BuilderContract $pageableQuery): BuilderContract => $this->applyPublicPageConstraints($pageableQuery, $site),
             )
             ->first();
+    }
+
+    /**
+     * A language with a configured fallback answers the fallback language's URL for a
+     * page that has no translation of its own in the requested language, so a visitor
+     * on the French domain still reaches an English-only page. A page that does have a
+     * translation in the requested language is only served at that translation's URL.
+     */
+    private function resolveFallbackPageUrl(Site $site, Language $language, string $url, ?PageUrl &$translatedUrl = null): ?PageUrl
+    {
+        foreach (array_slice(ResolveLanguageFallbackChainAction::run($language), 1) as $fallbackLanguageId) {
+            $pageUrl = $this->resolvePageUrl($site, $fallbackLanguageId, $url);
+
+            if (! $pageUrl instanceof PageUrl) {
+                continue;
+            }
+
+            $hasOwnTranslation = Translation::query()
+                ->where('translatable_type', $pageUrl->pageable_type)
+                ->where('translatable_id', $pageUrl->pageable_id)
+                ->where('language_id', $language->getKey())
+                ->exists();
+
+            // That page is served at its own requested-language URL, not this one; a later
+            // language in the chain may still map this path to an untranslated page.
+            if ($hasOwnTranslation) {
+                $translatedUrl ??= $this->ownLanguageUrl($pageUrl, $site, $language, $url);
+
+                continue;
+            }
+
+            return $pageUrl;
+        }
+
+        return null;
+    }
+
+    /**
+     * The page's own enabled URL in the requested language, for a path that now has a real
+     * translation: the old fallback path leads there instead of answering not found.
+     */
+    private function ownLanguageUrl(PageUrl $fallbackUrl, Site $site, Language $language, string $requestedUrl): ?PageUrl
+    {
+        $ownUrl = PageUrl::query()
+            ->where('site_id', $site->getKey())
+            ->where('language_id', $language->getKey())
+            ->where('pageable_type', $fallbackUrl->pageable_type)
+            ->where('pageable_id', $fallbackUrl->pageable_id)
+            ->whereNull('type')
+            ->where('url', '!=', $requestedUrl)
+            ->enabled()
+            ->oldest('id')
+            ->first();
+
+        if (! $ownUrl instanceof PageUrl) {
+            return null;
+        }
+
+        $site->loadMissing('siteDomains');
+        $siteDomain = $site->siteDomains->firstWhere('language_id', $language->getKey());
+
+        // Without a domain for the language the URL has no address to move to: answer not found.
+        if ($siteDomain === null) {
+            return null;
+        }
+
+        $ownUrl->setRelation('siteDomain', $siteDomain);
+
+        return $ownUrl;
     }
 
     /**
@@ -152,13 +238,20 @@ class ResolvePublicPageByUrlAction
                 'layout',
                 'pageUrls',
                 'blueprint',
-                'translation' => fn (BuilderContract $query): BuilderContract => $query->where('language_id', $language->getKey()),
+                // Every translation row travels with the page: the head's hreflang cluster
+                // pairs page URLs with real translations, and ResolveTranslationAction picks
+                // the requested or fallback translation from this set without a query.
+                'translations',
             ])
             ->first();
 
         if (! $model instanceof Pageable) {
             return null;
         }
+
+        // Each URL and translation carries its language, reusing the request language
+        // and reading any other languages once (not once per relation).
+        HydratePageLanguagesAction::run($model, [$language]);
 
         $this->setResolvedUrlRelations($model, $pageUrl, $site);
 
@@ -264,7 +357,7 @@ class ResolvePublicPageByUrlAction
         ]);
     }
 
-    private function missing(Site $site, Language $language): PublicPageResolutionData
+    private function missing(Site $site, Language $language, ?PageUrl $translatedUrl = null): PublicPageResolutionData
     {
         return new PublicPageResolutionData(
             page: null,
@@ -272,6 +365,7 @@ class ResolvePublicPageByUrlAction
             language: $language,
             layout: null,
             fields: new PublicPageFieldsData,
+            translatedUrl: $translatedUrl,
         );
     }
 }

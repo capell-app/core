@@ -8,10 +8,12 @@ use Capell\Core\Actions\GetPluginsAction;
 use Capell\Core\Actions\Install\CheckInstallPackageAccessAction;
 use Capell\Core\Actions\Install\ResolveInstallPackageLicenceAction;
 use Capell\Core\Data\Install\InstallRecommendationData;
+use Capell\Core\Data\Install\InstallSkippedPackageData;
 use Capell\Core\Data\Install\InstallSuiteSelectionData;
 use Capell\Core\Data\PackageData;
 use Capell\Core\Enums\ExtensionLicenceStatus;
 use Capell\Core\Enums\InstallPackageLicenceState;
+use Capell\Core\Enums\InstallSkipReason;
 use Capell\Core\Facades\CapellCore;
 use Capell\Core\Support\Install\InstallRecommendationRepository;
 use Capell\Core\Support\Packages\TrustedCorePackages;
@@ -34,6 +36,8 @@ final class InstallSuitePrompter
 {
     private const string CUSTOM_KEY = '__custom';
 
+    private const string DEFAULT_SUITE_KEY = 'marketing';
+
     private const int SEARCH_RESULT_LIMIT = 12;
 
     public function __construct(private readonly InstallRecommendationRepository $suites) {}
@@ -41,8 +45,12 @@ final class InstallSuitePrompter
     /**
      * Returns null when no suite fits, so the caller falls back to the plain package checklist.
      * A fresh install wipes the current install state, so installed extensions stay searchable.
+     *
+     * The compact form asks only "What are you building?" and installs the suite's foundation plus
+     * its recommended extensions that are free or already downloaded. The extension checklists, the
+     * search and the choose-your-own option stay behind `--customise`.
      */
-    public function prompt(bool $freshInstall = false, ?string $siteUrl = null): ?InstallSuiteSelectionData
+    public function prompt(bool $freshInstall = false, ?string $siteUrl = null, bool $compact = false): ?InstallSuiteSelectionData
     {
         $suites = collect($this->suites->suites())->keyBy(fn (InstallRecommendationData $suite): string => $suite->key);
 
@@ -54,10 +62,10 @@ final class InstallSuitePrompter
             label: __('capell-core::install.suites.goal_label'),
             options: [
                 ...$suites->map(fn (InstallRecommendationData $suite): string => $suite->label . ' — ' . $this->suiteDescription($suite))->all(),
-                self::CUSTOM_KEY => __('capell-core::install.suites.custom_option'),
+                ...($compact ? [] : [self::CUSTOM_KEY => __('capell-core::install.suites.custom_option')]),
             ],
-            default: (string) $suites->keys()->first(),
-            hint: __('capell-core::install.suites.goal_hint'),
+            default: $compact && $suites->has(self::DEFAULT_SUITE_KEY) ? self::DEFAULT_SUITE_KEY : (string) $suites->keys()->first(),
+            hint: $compact ? __('capell-core::install.suites.goal_hint_compact') : __('capell-core::install.suites.goal_hint'),
         );
 
         if ($suiteKey === self::CUSTOM_KEY || ! $suites->has($suiteKey)) {
@@ -66,6 +74,19 @@ final class InstallSuitePrompter
 
         /** @var InstallRecommendationData $suite */
         $suite = $suites->get($suiteKey);
+
+        if ($compact) {
+            return new InstallSuiteSelectionData(
+                packages: $this->reviewDownloadAccess(
+                    array_values(array_unique([...$this->foundationPackages($suite->packages), ...$suite->preselectedRecommended()])),
+                    $siteUrl ?? (string) config('app.url'),
+                ),
+                theme: $suite->theme,
+                demo: $suite->demo,
+                skipped: $suite->skippedRecommended(),
+                suiteKey: $suite->key,
+            );
+        }
 
         $selected = [
             ...$this->foundationPackages($suite->packages),
@@ -95,6 +116,11 @@ final class InstallSuitePrompter
             packages: $this->reviewDownloadAccess(array_values(array_unique($selected)), $siteUrl ?? (string) config('app.url')),
             theme: $suite->theme,
             demo: $suite->demo,
+            skipped: array_values(array_filter(
+                $suite->skippedRecommended(),
+                static fn (InstallSkippedPackageData $skipped): bool => $skipped->reason === InstallSkipReason::NotInPublicChannel,
+            )),
+            suiteKey: $suite->key,
         );
     }
 
@@ -109,7 +135,7 @@ final class InstallSuitePrompter
     public function foundationPackages(array $suitePackages): array
     {
         $defaults = CapellCore::getPackages(sortByDependencies: true)
-            ->filter(fn (PackageData $package): bool => TrustedCorePackages::isDefaultInstallSelection($package->name)
+            ->filter(fn (PackageData $package): bool => TrustedCorePackages::isDefaultInstallSelectionPackage($package)
                 && $package->isVisibleInCatalogue()
                 && ! in_array($package->name, $suitePackages, true))
             ->filter(function (PackageData $package) use ($suitePackages): bool {

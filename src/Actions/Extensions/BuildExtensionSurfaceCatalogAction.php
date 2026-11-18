@@ -28,13 +28,16 @@ use Capell\Core\Contracts\Extensions\ChecksExtensionHealth;
 use Capell\Core\Contracts\Extensions\ExtensionContribution;
 use Capell\Core\Contracts\Extensions\RecordsExtensionContributionReceipt;
 use Capell\Core\Contracts\Extensions\RegistersExtensionBlueprintSubject;
+use Capell\Core\Contracts\Extensions\RegistersExtensionContentWidget;
 use Capell\Core\Contracts\Extensions\RegistersExtensionOutboundEvent;
 use Capell\Core\Contracts\Extensions\RegistersExtensionPublicRenderData;
+use Capell\Core\Contracts\Extensions\RegistersExtensionSetting;
 use Capell\Core\Contracts\FrontendRouteReservationContributor;
 use Capell\Core\Contracts\Health\HealthCheck;
 use Capell\Core\Contracts\InteractionTargetCapabilityContributor;
 use Capell\Core\Contracts\Metrics\CollectsDailyMetrics;
 use Capell\Core\Contracts\Metrics\MetricScopeAuthorizer;
+use Capell\Core\Contracts\PackageLifecycleAction;
 use Capell\Core\Contracts\ProjectBuild\ProjectBuildArtifactHandler;
 use Capell\Core\Contracts\ProjectBuild\ProjectBuildManifestMigration;
 use Capell\Core\Contracts\ProjectBuild\ProjectBuildPackageInstaller;
@@ -125,6 +128,7 @@ use Capell\Core\Support\Extensions\ExtensionOrderResolver;
 use Capell\Core\Support\Extensions\ExtensionPosition;
 use Capell\Core\Support\Health\HealthCheckRegistry;
 use Capell\Core\Support\OutboundEventRegistry;
+use Capell\Core\Support\Packages\AbstractPackageServiceProvider;
 use Capell\Core\Support\ProjectBuild\ProjectBuildArtifactHandlerRegistry;
 use Capell\Core\Support\ProjectBuild\ProjectBuildManifestSchema;
 use Capell\Core\Support\PublicRead\PublicArtefactPermit;
@@ -137,6 +141,7 @@ use Capell\Core\Support\PublicRead\PublicReadScanner;
 use Capell\Core\Support\PublicRead\PublicReadWithdrawalSteps;
 use Capell\Core\Support\Publishing\PublicationReadinessRegistry;
 use Capell\Core\Support\Reporting\LogChannelReporter;
+use Capell\Core\Support\Settings\SettingsSchemaRegistry;
 use Capell\Core\Testing\ExtensionTestHarness;
 use InvalidArgumentException;
 use Lorisleiva\Actions\Concerns\AsFake;
@@ -240,7 +245,7 @@ final class BuildExtensionSurfaceCatalogAction
             $this->entry('core.contract.operational-health-check', 'contract', HealthCheck::class, ExtensionSurfaceStability::Experimental, 'Bounded operational health check boundary.'),
             $this->entry('core.contract.interaction-target-capability-contributor', 'contract', InteractionTargetCapabilityContributor::class, ExtensionSurfaceStability::Experimental, 'Typed interaction target capability contributions.'),
             $this->entry('core.contract.collects-daily-metrics', 'contract', CollectsDailyMetrics::class, ExtensionSurfaceStability::Experimental, 'Typed daily metric collection boundary.'),
-            $this->entry('core.contract.metric-scope-authorizer', 'contract', MetricScopeAuthorizer::class, ExtensionSurfaceStability::Experimental, 'Metric scope read authorization boundary.'),
+            $this->entry('core.contract.metric-scope-authorizer', 'contract', MetricScopeAuthorizer::class, ExtensionSurfaceStability::Experimental, 'Metric scope read authorisation boundary.'),
             $this->entry('core.contract.project-build-artifact-handler', 'contract', ProjectBuildArtifactHandler::class, ExtensionSurfaceStability::Stable, 'Package-owned project artifact verification boundary.', 'core.project-build-artifact-handler'),
             $this->entry('core.contract.project-build-package-installer', 'contract', ProjectBuildPackageInstaller::class, ExtensionSurfaceStability::Stable, 'Consumer-owned exact package acquisition and installed-release evidence boundary.', 'core.project-build-manifest-install'),
             $this->entry('core.action.install-project-build-manifest', 'action', InstallProjectBuildManifestAction::class, ExtensionSurfaceStability::Stable, 'Target-compatible ordered package installation followed by deterministic SiteSpec application.', 'core.project-build-manifest-install'),
@@ -335,6 +340,7 @@ final class BuildExtensionSurfaceCatalogAction
             $this->entry('admin.contract.dashboard-attention-contributor', 'contract', 'Capell\\Admin\\Contracts\\Dashboard\\DashboardAttentionContributor', ExtensionSurfaceStability::Experimental, 'Permission-aware work-first dashboard attention contributor.', owner: 'capell-app/admin'),
             $this->entry('admin.contract.dashboard-attention-recovery-contributor', 'contract', 'Capell\\Admin\\Contracts\\Dashboard\\DashboardAttentionRecoveryContributor', ExtensionSurfaceStability::Experimental, 'Explicit verification of resolved dashboard attention issues.', owner: 'capell-app/admin'),
             $this->entry('admin.contract.dashboard-publishing-contributor', 'contract', 'Capell\\Admin\\Contracts\\Dashboard\\DashboardPublishingContributor', ExtensionSurfaceStability::Experimental, 'Permission-aware work-first dashboard publishing contributor.', owner: 'capell-app/admin'),
+            $this->entry('admin.contract.first-run-task-contributor', 'contract', 'Capell\\Admin\\Contracts\\Dashboard\\FirstRunTaskContributor', ExtensionSurfaceStability::Experimental, 'Adds permission-aware tasks to the dashboard getting-started checklist.', owner: 'capell-app/admin'),
             $this->entry('admin.contract.dashboard-activity-contributor', 'contract', 'Capell\\Admin\\Contracts\\Dashboard\\DashboardActivityContributor', ExtensionSurfaceStability::Experimental, 'Permission-aware work-first dashboard activity contributor.', owner: 'capell-app/admin'),
             $this->entry('core.action.publication-blocking-checks', 'action', 'Capell\\Core\\Actions\\Publishing\\GetPublicationBlockingChecksAction', ExtensionSurfaceStability::Experimental, 'Read-only publication blockers across authored page languages.'),
             $this->entry('admin.registrar.workspace', 'registrar', 'Capell\\Admin\\Support\\Bridges\\AdminBridgeRegistrar', ExtensionSurfaceStability::Stable, 'Registers permission-filtered role workspace tools from an Admin bridge.', 'admin.bridge-registrar-workspace', owner: 'capell-app/admin'),
@@ -357,6 +363,14 @@ final class BuildExtensionSurfaceCatalogAction
                     'https://github.com/capell-app/capell/blob/b052f23730ac6dcd3bf6a7470a4e95c12f06b443/tests/Feature/ExtensionConformanceFailureTest.php#L26',
                 ],
             ),
+            $this->entry('core.provider.package-service-provider', 'provider', AbstractPackageServiceProvider::class, ExtensionSurfaceStability::Stable, 'Package provider base class and its bootPackage, bootInstalledRuntime and bootInstalledPackage hooks.', 'core.package-service-provider'),
+            $this->entry('core.contract.package-lifecycle-action', 'contract', PackageLifecycleAction::class, ExtensionSurfaceStability::Stable, 'Install, setup and uninstall lifecycle Action boundary.', 'core.package-lifecycle-action'),
+            $this->entry('core.registry.settings-schema', 'registry', SettingsSchemaRegistry::class, ExtensionSurfaceStability::Stable, 'Registers package settings classes for the admin settings screens.', 'core.settings-schema-registry'),
+            $this->entry('core.contract.extension-setting', 'contract', RegistersExtensionSetting::class, ExtensionSurfaceStability::Stable, 'Manifest settings contribution boundary.', 'core.extension-setting'),
+            $this->entry('core.contract.extension-content-widget', 'contract', RegistersExtensionContentWidget::class, ExtensionSurfaceStability::Stable, 'Manifest content widget contribution boundary.', 'core.extension-content-widget'),
+            $this->entry('frontend.registry.cache-invalidation', 'registry', 'Capell\\Frontend\\Support\\Cache\\CacheInvalidationRegistry', ExtensionSurfaceStability::Stable, 'Registers the cache invalidation rules a package declares.', 'frontend.cache-invalidation-registry', owner: 'capell-app/frontend'),
+            $this->entry('frontend.dto.cache-invalidation-rule', 'dto', 'Capell\\Frontend\\Data\\CacheInvalidationRule', ExtensionSurfaceStability::Stable, 'Typed cache invalidation rule a package registers.', 'frontend.cache-invalidation-registry', owner: 'capell-app/frontend'),
+            $this->entry('frontend.service.cache-invalidation-executor', 'service', 'Capell\\Frontend\\Support\\Cache\\CacheInvalidationExecutor', ExtensionSurfaceStability::Stable, 'Runs registered cache invalidation rules for a changed model or event.', 'frontend.cache-invalidation-executor', owner: 'capell-app/frontend'),
             $this->entry('core.schema.project-build-manifest-v1', 'schema', ProjectBuildManifestSchema::class, ExtensionSurfaceStability::Experimental, 'Closed JSON Schema for portable project build manifests.'),
             $this->entry('core.internal.registry-builder', 'internal', BuildExtensionContractRegistryAction::class, ExtensionSurfaceStability::Internal, 'Internal executable contribution index.'),
             $this->entry('core.internal.project-build-manifest-migration', 'internal', ProjectBuildManifestMigration::class, ExtensionSurfaceStability::Internal, 'Core-owned portable manifest migration boundary.'),
@@ -367,7 +381,7 @@ final class BuildExtensionSurfaceCatalogAction
             $this->entry('frontend.dto.public-render-data-cache-dependency', 'dto', 'Capell\\Frontend\\Data\\PublicRenderDataCacheDependencyData', ExtensionSurfaceStability::Experimental, 'Typed public render-data model dependency.', owner: 'capell-app/frontend'),
             $this->entry('frontend.registry.public-render-data-contributor', 'registry', 'Capell\\Frontend\\Support\\Render\\PublicRenderDataContributorRegistry', ExtensionSurfaceStability::Experimental, 'Deterministic public render-data contributor composition.', owner: 'capell-app/frontend'),
             $this->entry('frontend.registry.public-render-data-cache-dependency', 'registry', 'Capell\\Frontend\\Support\\Cache\\PublicRenderDataCacheDependencyRegistry', ExtensionSurfaceStability::Experimental, 'Host-scoped public render-data cache dependency index.', owner: 'capell-app/frontend'),
-            $this->entry('frontend.registry.render-hook', 'registry', 'Capell\\Frontend\\Support\\Render\\RenderHookRegistry', ExtensionSurfaceStability::Experimental, 'Owner-aware ordered Frontend render hooks.', owner: 'capell-app/frontend'),
+            $this->entry('frontend.registry.render-hook', 'registry', 'Capell\\Frontend\\Support\\Render\\RenderHookRegistry', ExtensionSurfaceStability::Stable, 'Owner-aware ordered Frontend render hooks.', 'frontend.render-hook-registry', owner: 'capell-app/frontend'),
             $this->entry('frontend.tag.public-render-data-contributor', 'tagged-service', 'capell.frontend.public-render-data-contributor', ExtensionSurfaceStability::Experimental, 'Container tag for public render-data contributors.', owner: 'capell-app/frontend'),
             $this->entry('frontend.contract.widget-resource-usage-contributor', 'contract', 'Capell\\Frontend\\Contracts\\FrontendWidgetResourceUsageContributor', ExtensionSurfaceStability::Experimental, 'Typed widget resource usage contribution boundary.', owner: 'capell-app/frontend'),
             $this->entry('frontend.dto.component-contribution', 'dto', 'Capell\\Frontend\\Data\\FrontendComponentContributionData', ExtensionSurfaceStability::Experimental, 'Named component contribution for a frontend runtime target.', owner: 'capell-app/frontend'),

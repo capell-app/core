@@ -53,6 +53,8 @@ it('keeps registries on the shared keyed base or an explicit distinct-shape allo
         'packages/core/src/Support/Media/MediaCompositionGuidanceRegistry.php',
         // Lifecycle-aware manifest event definitions with install reopen/freeze and domain validation.
         'packages/core/src/Support/OutboundEventRegistry.php',
+        // Two tagged contribution maps (privacy exporters and erasers) that it runs and whose receipts it validates.
+        'packages/core/src/Support/Privacy/PrivacySubjectRegistry.php',
         // Aggregates publication readiness contributors and owns the readiness state machine.
         'packages/core/src/Support/Publishing/PublicationReadinessRegistry.php',
         // Keyed by an integer schema version and walked as an ordered migration chain, not looked up by a single string key.
@@ -62,6 +64,8 @@ it('keeps registries on the shared keyed base or an explicit distinct-shape allo
         'packages/core/src/Support/Registries/AbstractKeyedRegistry.php',
         'packages/core/src/Support/Registries/TaggedProviderRegistry.php',
         'packages/core/src/Support/Renderables/RenderableRegistry.php',
+        // Accumulates validated extensions per sanitiser profile and folds them into one resolved policy; nothing is looked up by a free-form key.
+        'packages/core/src/Support/Security/HtmlSanitizerProfileRegistry.php',
         // Two keyed maps (checks and remediations) that the scan joins by weakness id; it is frozen on booted and re-opened only during package installation.
         'packages/core/src/Support/Security/SecurityWeaknessRegistry.php',
         // Fleet membership kept in the shared cache store under a lock; nodes are registered and expired by time, never looked up as keyed contributions.
@@ -73,6 +77,8 @@ it('keeps registries on the shared keyed base or an explicit distinct-shape allo
         'packages/core/src/Support/Themes/ThemeInstallDefaultsRegistry.php',
         'packages/core/src/ThemeStudio/Theme/PagePresentationRegistry.php',
         'packages/core/src/ThemeStudio/Theme/WidgetPresentationRegistry.php',
+        // Collects tagged first-run task contributors in container order and drops duplicate task keys; it is not a keyed contribution map.
+        'packages/admin/src/Support/Dashboard/FirstRunTaskRegistry.php',
         'packages/frontend/src/Support/Assets/FrontendPackageDependencyRegistry.php',
         'packages/frontend/src/Support/Cache/CacheInvalidationDependencyRegistry.php',
         'packages/frontend/src/Support/Cache/CacheInvalidationRegistry.php',

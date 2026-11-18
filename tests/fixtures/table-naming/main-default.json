@@ -158,6 +158,14 @@
         ],
         "foreign_keys": []
     },
+    "capell_ai_provenance": {
+        "indexes": [
+            "capell_ai_provenance_field_unique",
+            "capell_ai_provenance_pageable_confirmed_index",
+            "primary"
+        ],
+        "foreign_keys": []
+    },
     "capell_extension_health_alerts": {
         "indexes": [
             "capell_extension_health_alerts_affected_install_id_index",
@@ -190,6 +198,23 @@
             "capell_extensions_marketplace_runtime_status_index",
             "capell_extensions_provider_recovery_state_index",
             "capell_extensions_status_index",
+            "primary"
+        ],
+        "foreign_keys": []
+    },
+    "capell_idempotency_keys": {
+        "indexes": [
+            "capell_idempotency_keys_expires_at_index",
+            "capell_idempotency_keys_key_unique",
+            "primary"
+        ],
+        "foreign_keys": []
+    },
+    "capell_inbound_webhook_events": {
+        "indexes": [
+            "capell_inbound_webhook_events_provider_event_unique",
+            "capell_inbound_webhook_events_status_index",
+            "capell_inbound_webhook_events_subject_index",
             "primary"
         ],
         "foreign_keys": []
@@ -416,6 +441,13 @@
             },
             {
                 "name": null,
+                "columns": ["fallback_language_id"],
+                "foreign_schema": "main",
+                "foreign_table": "languages",
+                "foreign_columns": ["id"]
+            },
+            {
+                "name": null,
                 "columns": ["updated_by"],
                 "foreign_schema": "main",
                 "foreign_table": "users",
@@ -589,6 +621,7 @@
     "page_property_values": {
         "indexes": [
             "page_property_values_identity_unique",
+            "page_property_values_media_id_index",
             "page_property_values_numeric_lookup",
             "page_property_values_text_lookup",
             "primary"
@@ -767,6 +800,8 @@
             "pages_site_id_visible_from_index",
             "pages_site_id_visible_until_index",
             "pages_uuid_index",
+            "pages_visible_from_index",
+            "pages_visible_until_index",
             "primary"
         ],
         "foreign_keys": [
@@ -1037,6 +1072,7 @@
         "indexes": [
             "primary",
             "term_property_values_identity_unique",
+            "term_property_values_media_id_index",
             "term_property_values_numeric_lookup",
             "term_property_values_text_lookup"
         ],

@@ -14,13 +14,16 @@ use Capell\Core\Contracts\Extensions\RegistersExtensionRoute;
 use Capell\Core\Contracts\Extensions\RegistersExtensionSetting;
 use Capell\Core\Contracts\Extensions\RunsScheduledExtensionJob;
 use Capell\Core\Data\ContentGraph\ContentGraphEdgeCollectionData;
+use Capell\Core\Enums\CapabilityContract;
 use Capell\Core\Enums\ExtensionContributionType;
+use Capell\Core\Enums\PackageRole;
 use Capell\Core\Providers\CapellServiceProvider;
 use Capell\Core\Support\Extensions\CapellExtensionApi;
 use Capell\Core\Support\Manifest\CapellManifestData;
 use Capell\Core\Support\Manifest\Exceptions\InvalidManifestException;
 use Capell\Core\Support\Manifest\ManifestLoader;
 use Capell\Core\Support\Manifest\ManifestValidator;
+use Capell\Core\Support\Manifest\ManifestVocabulary;
 use Illuminate\Support\ServiceProvider;
 
 beforeAll(function (): void {
@@ -1150,3 +1153,302 @@ it('rejects outcome copy that would render blank or malformed', function (array 
     'faq entry without answer' => [['faq' => [['question' => 'Does it work with every theme?']]], 'marketplace.faq.0.answer'],
     'faq entry with stray key' => [['faq' => [['question' => 'Does it work with every theme?', 'answer' => 'Yes, through the theme notice slot.', 'link' => 'x']]], 'marketplace.faq.0.link'],
 ]);
+
+it('accepts and reads the capability contracts a package provides and consumes', function (): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+    $manifest['capabilityContracts'] = [
+        'provides' => ['form-submissions' => 1, 'form-catalogue' => 1],
+        'consumes' => ['campaign-conversions' => 1],
+    ];
+
+    expect(fn () => (new ManifestValidator)->validate($manifest, composerJson: manifestV3ComposerJson()))
+        ->not->toThrow(InvalidManifestException::class);
+
+    $contracts = CapellManifestData::fromArray($manifest)->capabilityContracts;
+
+    expect($contracts?->provides(CapabilityContract::FormSubmissions))->toBeTrue()
+        ->and($contracts?->provides(CapabilityContract::CampaignConversions))->toBeFalse()
+        ->and($contracts?->consumes(CapabilityContract::CampaignConversions))->toBeTrue()
+        ->and(CapellManifestData::fromArray($manifest)->toArray()['capabilityContracts'])->toBe([
+            'provides' => ['form-catalogue' => 1, 'form-submissions' => 1],
+            'consumes' => ['campaign-conversions' => 1],
+        ]);
+});
+
+it('rejects capability contract declarations Core does not define', function (mixed $section, string $field): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+    $manifest['capabilityContracts'] = $section;
+
+    expect(fn () => (new ManifestValidator)->validate($manifest, composerJson: manifestV3ComposerJson()))
+        ->toThrow(InvalidManifestException::class, $field);
+})->with([
+    'a list of strings' => [['form-submissions'], 'capabilityContracts'],
+    'an unknown section' => [['implements' => ['form-submissions' => 1]], 'capabilityContracts.implements'],
+    'a package class name' => [['consumes' => ['Capell\\FormBuilder\\Models\\Form' => 1]], 'capabilityContracts.consumes.Capell\\FormBuilder\\Models\\Form'],
+    'an unknown capability' => [['provides' => ['payments' => 1]], 'capabilityContracts.provides.payments'],
+    'a future major version' => [['provides' => ['form-submissions' => 2]], 'capabilityContracts.provides.form-submissions'],
+    'a string version' => [['provides' => ['form-submissions' => '1']], 'capabilityContracts.provides.form-submissions'],
+    'a version list' => [['provides' => [1]], 'capabilityContracts.provides'],
+]);
+
+it('declares capability contracts with the Core keys in the manifest v3 json schema', function (): void {
+    $schema = json_decode(
+        (string) file_get_contents(dirname(__DIR__, 3) . '/resources/schema/capell-manifest-v3.schema.json'),
+        true,
+        flags: JSON_THROW_ON_ERROR,
+    );
+
+    expect(data_get($schema, '$defs.capabilityContractVersions.propertyNames.enum'))
+        ->toBe(array_map(static fn (CapabilityContract $capability): string => $capability->value, CapabilityContract::cases()))
+        ->and(data_get($schema, 'properties.capabilityContracts.properties.provides.$ref'))->toBe('#/$defs/capabilityContractVersions');
+});
+
+it('accepts and reads the consent purposes a package asks about', function (): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+    $manifest['privacy'] = ['purposes' => ['youtube' => 'marketing', 'openstreetmap' => 'functional']];
+
+    expect(fn () => (new ManifestValidator)->validate($manifest, composerJson: manifestV3ComposerJson()))
+        ->not->toThrow(InvalidManifestException::class)
+        ->and(CapellManifestData::fromArray($manifest)->privacyPurposes)->toBe(['openstreetmap' => 'functional', 'youtube' => 'marketing'])
+        ->and(CapellManifestData::fromArray($manifest)->toArray()['privacy'])->toBe(['purposes' => ['openstreetmap' => 'functional', 'youtube' => 'marketing']])
+        ->and(CapellManifestData::fromArray(manifestV3Fixture('valid-premium-package'))->toArray())->not->toHaveKey('privacy');
+});
+
+it('rejects consent purpose declarations that could skip or confuse consent', function (mixed $section, string $field): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+    $manifest['privacy'] = $section;
+
+    expect(fn () => (new ManifestValidator)->validate($manifest, composerJson: manifestV3ComposerJson()))
+        ->toThrow(InvalidManifestException::class, $field);
+})->with([
+    'a list' => [['youtube'], 'privacy'],
+    'an unknown section' => [['cookies' => []], 'privacy.cookies'],
+    'a purposes list' => [['purposes' => ['youtube']], 'privacy.purposes'],
+    'an essential purpose, which would never ask' => [['purposes' => ['youtube' => 'essential']], 'privacy.purposes.youtube'],
+    'an unknown category' => [['purposes' => ['youtube' => 'ads']], 'privacy.purposes.youtube'],
+    'a category name as a purpose' => [['purposes' => ['marketing' => 'functional']], 'privacy.purposes.marketing'],
+    'a malformed purpose key' => [['purposes' => ['YouTube Video' => 'marketing']], 'privacy.purposes.YouTube Video'],
+]);
+
+it('declares consent purposes in the manifest v3 json schema with the categories a package may use', function (): void {
+    $schema = json_decode(
+        (string) file_get_contents(dirname(__DIR__, 3) . '/resources/schema/capell-manifest-v3.schema.json'),
+        true,
+        flags: JSON_THROW_ON_ERROR,
+    );
+
+    expect(data_get($schema, 'properties.privacy.properties.purposes.additionalProperties.enum'))
+        ->toBe(['functional', 'preferences', 'analytics', 'marketing']);
+});
+
+it('accepts every documented product and commercial value and rejects any other', function (string $path, string $value, bool $accepted): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+    data_set($manifest, $path, $value);
+    $problems = (new ManifestValidator)->structureProblems($manifest, manifestV3ComposerJson());
+
+    expect($problems === [])->toBe($accepted);
+
+    if (! $accepted) {
+        expect(array_keys($problems))->toBe([$path]);
+    }
+})->with(function (): Generator {
+    $vocabulary = [
+        'product.tier' => ManifestVocabulary::PRODUCT_TIERS,
+        'commercial.proposedLicense' => ManifestVocabulary::PROPOSED_LICENSES,
+        'commercial.requestedCertification' => ManifestVocabulary::REQUESTED_CERTIFICATIONS,
+        'commercial.supportPolicy' => ManifestVocabulary::SUPPORT_POLICIES,
+    ];
+
+    foreach ($vocabulary as $path => $values) {
+        foreach ($values as $value) {
+            yield $path . ' ' . $value => [$path, $value, true];
+        }
+
+        yield $path . ' invented' => [$path, 'invented', false];
+    }
+});
+
+it('keeps the manifest schema enums identical to the validator vocabulary', function (): void {
+    $schema = json_decode(
+        (string) file_get_contents(dirname(__DIR__, 3) . '/resources/schema/capell-manifest-v3.schema.json'),
+        true,
+        flags: JSON_THROW_ON_ERROR,
+    );
+
+    expect(data_get($schema, 'properties.product.properties.tier.enum'))->toBe(ManifestVocabulary::PRODUCT_TIERS)
+        ->and(data_get($schema, 'properties.commercial.properties.proposedLicense.enum'))->toBe([...ManifestVocabulary::PROPOSED_LICENSES, null])
+        ->and(data_get($schema, 'properties.commercial.properties.requestedCertification.enum'))->toBe([...ManifestVocabulary::REQUESTED_CERTIFICATIONS, null])
+        ->and(data_get($schema, 'properties.commercial.properties.supportPolicy.enum'))->toBe([...ManifestVocabulary::SUPPORT_POLICIES, null])
+        ->and(data_get($schema, 'properties.$schema.type'))->toBe('string');
+});
+
+it('accepts model, settings and event cache invalidation sources and rejects malformed ones', function (array $sources, ?string $field): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+    $manifest['performance']['cacheSafety']['cacheable'] = true;
+    $manifest['performance']['cacheSafety']['invalidationSources'] = $sources;
+    $problems = (new ManifestValidator)->structureProblems($manifest, manifestV3ComposerJson());
+
+    expect($field === null ? $problems : array_keys($problems))->toBe($field === null ? [] : [$field]);
+})->with([
+    'model with events' => [[['model' => 'Vendor\\Example\\Models\\Item', 'events' => ['saved']]], null],
+    'settings class' => [[['settings' => 'Vendor\\Example\\Settings\\ExampleSettings']], null],
+    'event class' => [[['event' => 'Vendor\\Example\\Events\\ItemChanged']], null],
+    'all three shapes' => [[['model' => 'Vendor\\Example\\Models\\Item', 'events' => []], ['settings' => 'S'], ['event' => 'E']], null],
+    'empty settings class' => [[['settings' => '']], 'settings'],
+    'settings beside an event' => [[['settings' => 'S', 'event' => 'E']], 'cacheSafety.invalidationSources.0'],
+    'settings with a stray key' => [[['settings' => 'S', 'note' => 'x']], 'cacheSafety.invalidationSources.0'],
+    'unknown shape' => [[['table' => 'items']], 'cacheSafety.invalidationSources.0'],
+    'model without events' => [[['model' => 'Vendor\\Example\\Models\\Item']], 'events'],
+]);
+
+it('declares the settings and event invalidation sources in the manifest v3 json schema', function (): void {
+    $schema = json_decode(
+        (string) file_get_contents(dirname(__DIR__, 3) . '/resources/schema/capell-manifest-v3.schema.json'),
+        true,
+        flags: JSON_THROW_ON_ERROR,
+    );
+    $shapes = array_map(
+        static fn (array $shape): array => array_keys($shape['properties']),
+        data_get($schema, 'properties.performance.properties.cacheSafety.properties.invalidationSources.items.oneOf'),
+    );
+
+    expect($shapes)->toBe([['model', 'events'], ['settings'], ['event']]);
+});
+
+it('ignores the schema pointer a manifest may start with', function (): void {
+    $manifest = ['$schema' => 'https://capell.app/schema/capell-manifest-v3.schema.json', ...manifestV3Fixture('valid-premium-package')];
+
+    expect((new ManifestValidator)->structureProblems($manifest, manifestV3ComposerJson()))->toBe([]);
+});
+
+it('runs every registered manifest section validator', function (string $section, string $field): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+    $manifest[$section] = 'not an object';
+
+    expect(array_keys((new ManifestValidator)->structureProblems($manifest, manifestV3ComposerJson())))->toBe([$field]);
+})->with([
+    'security' => ['security', 'security'],
+    'performance' => ['performance', 'performance'],
+    'commercial' => ['commercial', 'commercial'],
+    'marketplace' => ['marketplace', 'marketplace'],
+    'capability contracts' => ['capabilityContracts', 'capabilityContracts'],
+    'privacy' => ['privacy', 'privacy'],
+]);
+
+it('accepts declared public endpoint throttles that cover every throttled route', function (): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+    $manifest['security'] = [
+        'publicSurface' => ['throttledRoutes' => ['capell-example.submit']],
+        'throttles' => [
+            'capell-example-submit' => ['maxAttempts' => 5, 'decaySeconds' => 60, 'routes' => ['capell-example.submit']],
+        ],
+    ];
+
+    expect(fn () => (new ManifestValidator)->validate($manifest, composerJson: manifestV3ComposerJson()))->not->toThrow(InvalidManifestException::class);
+});
+
+it('keeps accepting throttled routes from packages that have not declared throttles yet', function (): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+    $manifest['security'] = ['publicSurface' => ['throttledRoutes' => ['capell-example.submit']]];
+
+    expect(fn () => (new ManifestValidator)->validate($manifest, composerJson: manifestV3ComposerJson()))->not->toThrow(InvalidManifestException::class);
+});
+
+it('rejects malformed or incomplete public endpoint throttle declarations', function (array $throttles, string $message): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+    $manifest['security'] = [
+        'publicSurface' => ['throttledRoutes' => ['capell-example.submit']],
+        'throttles' => $throttles,
+    ];
+
+    expect(fn () => (new ManifestValidator)->validate($manifest, composerJson: manifestV3ComposerJson()))
+        ->toThrow(InvalidManifestException::class, $message);
+})->with([
+    'throttled route left uncovered' => [['capell-example-other' => ['maxAttempts' => 5, 'decaySeconds' => 60, 'routes' => ['capell-example.other']]], 'capell-example.submit'],
+    'purpose outside the naming convention' => [['submit' => ['maxAttempts' => 5, 'decaySeconds' => 60, 'routes' => ['capell-example.submit']]], 'security.throttles.submit'],
+    'zero attempts' => [['capell-example-submit' => ['maxAttempts' => 0, 'decaySeconds' => 60, 'routes' => ['capell-example.submit']]], 'maxAttempts'],
+    'string window' => [['capell-example-submit' => ['maxAttempts' => 5, 'decaySeconds' => '60', 'routes' => ['capell-example.submit']]], 'decaySeconds'],
+    'missing routes' => [['capell-example-submit' => ['maxAttempts' => 5, 'decaySeconds' => 60]], 'routes'],
+    'unknown field' => [['capell-example-submit' => ['maxAttempts' => 5, 'decaySeconds' => 60, 'routes' => ['capell-example.submit'], 'key' => 'email']], 'security.throttles.capell-example-submit.key'],
+    'not an object' => [['capell-example-submit' => 5], 'security.throttles.capell-example-submit'],
+]);
+
+it('declares public endpoint throttles in the manifest v3 json schema', function (): void {
+    $schema = json_decode((string) file_get_contents(dirname(__DIR__, 3) . '/resources/schema/capell-manifest-v3.schema.json'), true, flags: JSON_THROW_ON_ERROR);
+
+    expect(data_get($schema, 'properties.security.properties.throttles.additionalProperties.required'))->toBe(['maxAttempts', 'decaySeconds', 'routes'])
+        ->and(data_get($schema, 'properties.security.properties.throttles.additionalProperties.additionalProperties'))->toBeFalse();
+});
+
+it('accepts and reads package roles, role priority and install metadata', function (): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+    $manifest['roles'] = ['default-theme', 'workflow-final'];
+    $manifest['rolePriority'] = 20;
+    $manifest['install'] = [
+        'tips' => [['variant' => 'blog', 'priority' => 5]],
+        'legacyTables' => [['name' => 'tags', 'configKey' => 'tags.table', 'migration' => 'create_tags_table']],
+    ];
+
+    $data = CapellManifestData::fromArray($manifest);
+
+    expect(fn () => (new ManifestValidator)->validate($manifest, composerJson: manifestV3ComposerJson()))
+        ->not->toThrow(InvalidManifestException::class)
+        ->and($data->roles)->toBe([PackageRole::DefaultTheme, PackageRole::WorkflowFinal])
+        ->and($data->rolePriority)->toBe(20)
+        ->and($data->installTips[0]->variant)->toBe('blog')
+        ->and($data->installTips[0]->priority)->toBe(5)
+        ->and($data->legacyTables[0]->configKey)->toBe('tags.table')
+        ->and($data->toArray())->toMatchArray([
+            'roles' => ['default-theme', 'workflow-final'],
+            'rolePriority' => 20,
+            'install' => $manifest['install'],
+        ]);
+});
+
+it('leaves roles and install metadata empty and out of the output when a manifest declares none', function (): void {
+    $manifest = manifestV3Fixture('valid-premium-package');
+
+    $data = CapellManifestData::fromArray($manifest);
+
+    expect(fn () => (new ManifestValidator)->validate($manifest, composerJson: manifestV3ComposerJson()))
+        ->not->toThrow(InvalidManifestException::class)
+        ->and($data->roles)->toBe([])
+        ->and($data->rolePriority)->toBe(0)
+        ->and($data->installTips)->toBe([])
+        ->and($data->legacyTables)->toBe([])
+        ->and($data->toArray())->not->toHaveKeys(['roles', 'rolePriority', 'install']);
+});
+
+it('rejects invalid role and install declarations', function (array $fields, string $field): void {
+    $manifest = [...manifestV3Fixture('valid-premium-package'), ...$fields];
+
+    expect(fn () => (new ManifestValidator)->validate($manifest, composerJson: manifestV3ComposerJson()))
+        ->toThrow(InvalidManifestException::class, $field);
+})->with([
+    'roles as a string' => [['roles' => 'default-theme'], 'roles'],
+    'an unknown role' => [['roles' => ['made-up']], 'roles'],
+    'a non-string role' => [['roles' => [1]], 'roles'],
+    'a non-integer priority' => [['rolePriority' => '5'], 'rolePriority'],
+    'install as a list' => [['install' => ['tips']], 'install'],
+    'an unknown install field' => [['install' => ['hints' => []]], 'install.hints'],
+    'tips as an object' => [['install' => ['tips' => ['variant' => 'blog']]], 'install.tips'],
+    'a tip without a priority' => [['install' => ['tips' => [['variant' => 'blog']]]], 'install.tips.0.priority'],
+    'a tip with a string priority' => [['install' => ['tips' => [['variant' => 'blog', 'priority' => '1']]]], 'install.tips.0.priority'],
+    'a tip with an empty variant' => [['install' => ['tips' => [['variant' => '', 'priority' => 1]]]], 'install.tips.0.variant'],
+    'a tip with an unknown field' => [['install' => ['tips' => [['variant' => 'a', 'priority' => 1, 'x' => 1]]]], 'install.tips.0.x'],
+    'a legacy table without a migration' => [['install' => ['legacyTables' => [['name' => 'tags', 'configKey' => 'tags.table']]]], 'install.legacyTables.0.migration'],
+    'a legacy table that is a list' => [['install' => ['legacyTables' => [['tags']]]], 'install.legacyTables.0'],
+]);
+
+it('declares roles and install metadata in the manifest v3 json schema', function (): void {
+    $schema = json_decode(
+        (string) file_get_contents(dirname(__DIR__, 3) . '/resources/schema/capell-manifest-v3.schema.json'),
+        true,
+        flags: JSON_THROW_ON_ERROR,
+    );
+
+    expect(data_get($schema, 'properties.roles.items.enum'))->toBe(PackageRole::values())
+        ->and(data_get($schema, 'properties.rolePriority.type'))->toBe('integer')
+        ->and(data_get($schema, 'properties.install.properties.tips.items.required'))->toBe(['variant', 'priority'])
+        ->and(data_get($schema, 'properties.install.properties.legacyTables.items.required'))->toBe(['name', 'configKey', 'migration']);
+});

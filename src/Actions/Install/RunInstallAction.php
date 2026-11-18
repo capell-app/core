@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Capell\Core\Actions\Install;
 
 use Capell\Core\Contracts\ProgressReporter;
+use Capell\Core\Contracts\StepProgressReporter;
 use Capell\Core\Data\Install\InstallRunResultData;
 use Capell\Core\Data\InstallInputData;
 use Capell\Core\Support\Install\InstallPlan;
@@ -21,18 +22,29 @@ class RunInstallAction
 
     private ?InstallRunResultData $completedResult = null;
 
+    private ?string $resumeCommand = null;
+
+    private bool $passwordOmitted = false;
+
     public function handle(InstallInputData $inputData, ProgressReporter $reporter): void
     {
         $this->completedResult = null;
+        // A new run owns the record of where it stops; an earlier run's record would name the wrong step.
+        InstallRunState::clearStoppedStep();
         $reporter->step('Starting installation…');
 
-        $state = new InstallRunState($inputData, $reporter);
+        $state = new InstallRunState($inputData, $reporter, resumeCommand: $this->resumeCommand, passwordOmitted: $this->passwordOmitted);
         $executor = resolve(InstallStepExecutor::class);
         $plan = InstallPlan::build($inputData);
         $completedSteps = [];
 
         while (($step = collect($plan)->first(fn (array $step): bool => ! in_array($step['key'], $completedSteps, true))) !== null) {
-            $reporter->step(sprintf('[%d/%d] %s', count($completedSteps) + 1, count($plan), $step['label']));
+            if ($reporter instanceof StepProgressReporter) {
+                $reporter->advance(count($completedSteps) + 1, count($plan), $step['label']);
+            } else {
+                $reporter->step(sprintf('[%d/%d] %s', count($completedSteps) + 1, count($plan), $step['label']));
+            }
+
             try {
                 $executor->execute($step['key'], $state);
             } catch (Throwable $failure) {
@@ -48,13 +60,24 @@ class RunInstallAction
             }
         }
 
+        if ($reporter instanceof StepProgressReporter) {
+            $reporter->finish();
+        }
+
         $this->completedResult = BuildInstallRunResultAction::run($inputData, $completedSteps, $state->doctorWarnings);
     }
 
-    public function runWithResult(InstallInputData $inputData, ProgressReporter $reporter): InstallRunResultData
+    public function runWithResult(InstallInputData $inputData, ProgressReporter $reporter, ?string $resumeCommand = null, bool $passwordOmitted = false): InstallRunResultData
     {
         $this->completedResult = null;
-        $this->handle($inputData, $reporter);
+        $this->resumeCommand = $resumeCommand;
+        $this->passwordOmitted = $passwordOmitted;
+        try {
+            $this->handle($inputData, $reporter);
+        } finally {
+            $this->resumeCommand = null;
+            $this->passwordOmitted = false;
+        }
 
         // Existing custom handle implementations retain their result fallback.
         return $this->completedResult ?? BuildInstallRunResultAction::run($inputData);

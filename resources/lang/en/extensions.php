@@ -3,6 +3,24 @@
 declare(strict_types=1);
 
 return [
+    'authorisation' => [
+        'required' => ':package requires valid Marketplace authorisation. Connect your account and activate the package before installing or enabling it.',
+    ],
+    'receipt_import' => [
+        'unreadable' => 'The receipt bundle at :path cannot be read. Check the path and file permissions, then run the import again.',
+        'invalid' => 'This file is not a Marketplace receipt bundle. Download a new bundle for this installation from the Marketplace.',
+        'wrong_instance' => 'This bundle was issued for a different installation. Check CAPELL_MARKETPLACE_INSTANCE_ID, or download the bundle issued for this installation.',
+        'summary' => 'Imported :accepted receipts; :rejected were refused because they are not valid for this installation.',
+        'catalogue_rejected' => 'The commercial catalogue was refused because it is older than the one held or its signature does not verify. Package classifications are unchanged.',
+    ],
+    'install_plan' => [
+        'bundle_members' => 'Installs the bundle members first: :members',
+        'schema_migrations' => 'Publishes and runs the extension database migrations.',
+        'settings_migrations' => 'Publishes and runs the extension settings migrations.',
+        'install_command' => 'Runs the install command :command.',
+        'install_action' => 'Runs the install Action :action.',
+        'nothing_declared' => 'Declares no migrations and no install command or Action.',
+    ],
     'quarantine' => [
         'unavailable' => 'Quarantine state unavailable. Restore access to the quarantine store before enabling extensions.',
         'doctor' => ':package is quarantined after :failing failed verification; quarantined with it: :set',
@@ -14,6 +32,7 @@ return [
         'quarantined' => ['message' => ':package is quarantined because a package changed with it failed verification.', 'next_action' => 'Resolve the failing package, then run php artisan capell:extensions:release-quarantine :package.'],
         'content_hash_mismatch' => ['message' => 'Installed contents for :package do not match the release content hash.', 'next_action' => 'Obtain the intended release from a trusted source before retrying.'],
         'release_digest_not_compared' => ['message' => 'The release for :package supplied no content hash or checksum to compare, so its installed contents could not be checked.', 'next_action' => 'Install a release that publishes a content hash, or ask the publisher to add one.'],
+        'release_digest_missing_for_installed_version' => ['message' => 'The Marketplace published no single digest for the version of :package that Composer installed, so its contents could not be checked.', 'next_action' => 'Install a version the Marketplace publishes a digest for, or ask the publisher to have this version reviewed.'],
         'quarantine_evidence_still_fails' => ['message' => 'The installed contents of :package still do not match the digest recorded when it was quarantined.', 'next_action' => 'Reinstall :package from a trusted release, then release the quarantine again.'],
         'content_hash_unreadable' => ['message' => 'Installed contents for :package could not be verified.', 'next_action' => 'Check the package files and retry with a trusted release.'],
         'hash_failed' => 'Unable to hash the extension directory. Check that it is readable and contains no symbolic links.',

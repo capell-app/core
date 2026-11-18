@@ -16,6 +16,7 @@ use Capell\Core\Support\Extensions\ExtensionLifecycleRepository;
 use Capell\Core\Support\Extensions\InstalledExtensionRepository;
 use Capell\Core\Support\Install\PackageWorkflowPlanner;
 use Capell\Core\Support\Manifest\CapellManifestData;
+use Capell\Core\Support\Marketplace\ExtensionCommercialPolicy;
 use Capell\Core\Support\Packages\InstalledRuntimeLifecycle;
 use Capell\Core\Support\Packages\TrustedCorePackages;
 use Closure;
@@ -23,6 +24,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\ServiceProvider;
 use InvalidArgumentException;
 use RuntimeException;
+use Throwable;
 
 trait ManagesPackages
 {
@@ -52,6 +54,8 @@ trait ManagesPackages
         $this->installedExtensionNamesCache = null;
         $this->clearPackageMemoization();
         $this->extensionLifecycle()->clear();
+        // A heartbeat in another worker may have stored a newer catalogue.
+        resolve(ExtensionCommercialPolicy::class)->clear();
     }
 
     /**
@@ -281,7 +285,9 @@ trait ManagesPackages
         }
 
         if (array_key_exists($name, $this->forcedPackageInstallStates)) {
-            return $this->forcedPackageInstallStates[$name];
+            // Forced state is a test and recovery seam; it never stands in for commercial authorisation.
+            return $this->forcedPackageInstallStates[$name]
+                && $this->extensionLifecycle()->commerciallyAuthorised($name, collect($this->packages));
         }
 
         return $this->isPackageEnabled($name);
@@ -320,6 +326,10 @@ trait ManagesPackages
 
         if ($extensionStatus === ExtensionStatusEnum::Enabled) {
             return $this->extensionLifecycle()->runtimeGateAllows($name, collect($this->packages)) !== false;
+        }
+
+        if (! $this->extensionLifecycle()->commerciallyAuthorised($name, collect($this->packages))) {
+            return false;
         }
 
         if ($package->installed !== null) {
@@ -496,19 +506,28 @@ trait ManagesPackages
     public function markPackageProviderQuarantined(string $name, string $provider, string $reason): void
     {
         if ($this->isCorePackageName($name)) {
-            $this->clearExtensionCache();
+            $this->clearExtensionCacheContained();
 
             return;
         }
 
-        $this->extensionLifecycle()->recordProviderQuarantined(
-            name: $name,
-            provider: $provider,
-            reason: $reason,
-            package: $this->packageOrNull($name),
-        );
-        $this->clearExtensionCache();
+        // Contain the provider in memory first: the persisted record is best-effort, so a
+        // database or cache failure here must never fail boot or leave the package loaded.
+        $this->clearExtensionCacheContained();
         $this->forcePackageInstalled($name, false);
+
+        try {
+            $this->extensionLifecycle()->recordProviderQuarantined(
+                name: $name,
+                provider: $provider,
+                reason: $reason,
+                package: $this->packageOrNull($name),
+            );
+            // The cache can repopulate from the database between the early clear and the write.
+            $this->clearExtensionCacheContained();
+        } catch (Throwable $throwable) {
+            report($throwable);
+        }
     }
 
     public function markPackageDisabled(string $name): void
@@ -665,8 +684,26 @@ trait ManagesPackages
             }
 
             $this->persistedExtensionCacheRemovalDeferred = false;
-            $this->removePersistedExtensionCacheKeys();
+
+            try {
+                $this->removePersistedExtensionCacheKeys();
+            } catch (Throwable $throwable) {
+                report($throwable);
+            }
         });
+    }
+
+    /**
+     * Quarantine can run while the database is down, and the cache store may be database
+     * backed, so a store failure must not stop the in-memory quarantine completing.
+     */
+    private function clearExtensionCacheContained(): void
+    {
+        try {
+            $this->clearExtensionCache();
+        } catch (Throwable $throwable) {
+            report($throwable);
+        }
     }
 
     private function removePersistedExtensionCacheKeys(): void
@@ -677,6 +714,7 @@ trait ManagesPackages
 
     private function resetExtensionCacheState(): void
     {
+        resolve(ExtensionCommercialPolicy::class)->clear();
         foreach ($this->packages as $packageData) {
             $packageData->installed = null;
         }

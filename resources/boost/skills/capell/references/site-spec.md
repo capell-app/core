@@ -6,6 +6,8 @@ SiteSpec is Capell's deterministic site handoff contract. Core validates and imp
 
 - [Import](#import)
 - [Contract](#contract)
+- [Apply to an existing site](#apply-to-an-existing-site)
+- [Presets](#presets)
 - [Remote Media Safety](#remote-media-safety)
 - [Package-Owned Blocks](#package-owned-blocks)
 
@@ -16,6 +18,29 @@ php artisan capell:site-spec-import storage/app/site-spec.json
 ```
 
 The path may be absolute or relative to the application working directory. The importer hashes the normalized contract; importing the same spec again returns the existing site instead of duplicating it.
+
+## Apply to an existing site
+
+```bash
+php artisan capell:site-spec-import storage/app/site-spec.json --plan --site=3
+php artisan capell:site-spec-import storage/app/site-spec.json --site=3
+```
+
+`--site` applies the spec to a site that already exists instead of creating a new one. Pages are matched by slug in the spec's language (a page's own `meta.slug` wins over its spec slug): missing pages are created, pages whose name, title or content differ are updated, and the rest are left alone. Two pages on the site with the same slug make the apply refuse rather than guess. Theme settings are merged into the site's theme when the theme key matches. Package-owned parts such as navigation run their appliers, and media is attached, once for each distinct spec, and media already attached is not attached again. Navigation appliers replace their data, so anything added by hand to it is replaced when a changed spec is applied.
+
+The site keeps the hash of its original import in `site_spec_hash`, which is how a repeated import finds it and how a privacy repair works, and records the hash of the spec last applied in `site_spec_applied_hash`.
+
+`--plan` prints what the apply would create, update and leave alone, and writes nothing. It makes the same checks as the apply, so a plan that succeeds can be applied. Without `--site` it plans against the site this exact spec was last applied to or imported as, or reports every page as a create. Package-owned parts are listed but not previewed.
+
+Applying never changes whether an existing page is published. A private spec also leaves any page that is live or scheduled untouched, and with it package-owned parts and media, because its copy and images must not reach a live site; the plan marks such pages as held. Pages a private spec adds are created as drafts. A public, acknowledged spec updates live pages.
+
+### Publish
+
+```bash
+php artisan capell:site-spec-import storage/app/site-spec.json --site=3 --publish --user=editor@example.com
+```
+
+`--publish` applies the spec and then makes every spec page public through the normal publication pipeline, as the user named with `--user` (an email address or ID), then clears the frontend caches. A private spec's "Coming soon" homepage is replaced with the spec's copy unless an editor already replaced it, and the noindex markers a private import wrote are lifted. Everything that can be refused (a page missing from the site, a user who may not publish it, missing required properties) is checked before anything is written, and the apply and the publish share one transaction, so a failure names the page and leaves the site as it was before the command. Markers such as noindex are lifted only where they still hold exactly what the private import wrote; a noindex an editor or the spec chose is kept. Running it again publishes nothing more. Publishing is deliberate: a private spec never publishes on its own, and `--publish` cannot be combined with `--plan`.
 
 ## Contract
 
@@ -78,6 +103,14 @@ The path may be absolute or relative to the application working directory. The i
 `site`, `theme`, and at least one `pages` entry are required. Page slugs and navigation keys use lowercase kebab-case. Navigation page references and media image keys must match page slugs in the same spec. Extension values are Composer package names and every requested package must already be installed before import starts.
 
 Private imports publish only a neutral, noindex coming-soon homepage. A public import requires both `"initialVisibility": "public"` and `"acknowledgePublic": true`.
+
+## Presets
+
+Core ships three starting points as SiteSpec files under `packages/core/resources/site-spec/presets/`: `service-business`, `shop-front` and `studio`. Each is a complete, private, five-page draft with real copy and a main navigation, and passes the same validation as any other spec. Read them through `SiteSpecPresetRegistry` (`all()`, `get($key)`, `keys()`).
+
+Each preset also offers a contact form under `packageData.forms`, applied by the extension that registers the `forms` applier (Form Builder). An entry has a `handle`, a `name`, a `placeOnPage` page slug, an optional `successMessage`, an optional `notify` address and `fields`, each with a `key`, `label`, `type` (`text`, `email`, `textarea` or `checkbox`) and `required`. Guided setup keeps package data only for appliers that are registered, drops a form whose page was not chosen, and sets `notify` to the address the person gives on the Review step.
+
+A theme or package adds its own preset by tagging a class that implements `SiteSpecPresetProvider` with `SiteSpecPresetProvider::TAG` and returning `SiteSpecPresetData` from `presets()`. Preset keys are unique across Core and every provider; a duplicate key throws when it is registered.
 
 ## Remote Media Safety
 

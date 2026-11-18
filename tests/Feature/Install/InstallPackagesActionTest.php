@@ -93,7 +93,41 @@ afterEach(function (): void {
     DemoPackageAction::resetProcessFactory();
 });
 
-function makeInstallInputData(array $packages, bool $demoContent = false, bool $seedDefaultData = true): InstallInputData
+/** @return ProgressReporter&object{steps: list<string>, lines: list<string>, errors: list<string>} */
+function recordingInstallReporter(): ProgressReporter
+{
+    return new class implements ProgressReporter
+    {
+        /** @var list<string> */
+        public array $steps = [];
+
+        /** @var list<string> */
+        public array $lines = [];
+
+        /** @var list<string> */
+        public array $errors = [];
+
+        #[Override]
+        public function step(string $label): void
+        {
+            $this->steps[] = $label;
+        }
+
+        #[Override]
+        public function report(string $line): void
+        {
+            $this->lines[] = $line;
+        }
+
+        #[Override]
+        public function error(string $line): void
+        {
+            $this->errors[] = $line;
+        }
+    };
+}
+
+function makeInstallInputData(array $packages, bool $demoContent = false, bool $seedDefaultData = true, ?string $siteName = null): InstallInputData
 {
     return new InstallInputData(
         siteUrl: 'https://example.com',
@@ -104,6 +138,7 @@ function makeInstallInputData(array $packages, bool $demoContent = false, bool $
         generateSitemap: false,
         generateStaticSite: false,
         seedDefaultData: $seedDefaultData,
+        siteName: $siteName,
     );
 }
 
@@ -129,9 +164,13 @@ function bootstrapInstallPackagesTest(array $packageNames = ['test']): FakeMigra
 
 it('does nothing when packages list is empty', function (): void {
     $inputData = makeInstallInputData(packages: []);
+    $reporter = recordingInstallReporter();
 
-    expect(fn (): mixed => InstallPackagesAction::run($inputData, null, new NullProgressReporter))
-        ->not->toThrow(Throwable::class);
+    InstallPackagesAction::run($inputData, null, $reporter);
+
+    expect($reporter->steps)->toBeEmpty()
+        ->and($reporter->lines)->toBeEmpty()
+        ->and($reporter->errors)->toBeEmpty();
 });
 
 it('passes captured first-install provenance only to packages declaring that lifecycle option', function (bool $initial): void {
@@ -428,19 +467,49 @@ it('keeps custom app names as the default install site name', function (): void 
     ]);
 });
 
+it('creates the first site with the name asked during install rather than the application name', function (): void {
+    Storage::fake();
+    app()->instance(MigrationFilesystemInterface::class, new FakeMigrationFilesystem);
+    config()->set('app.name', 'Acme Publishing');
+
+    CapellCore::registerPackage(name: 'test');
+    CapellCore::getPackage('test')->setupAction = LifecycleRecorderAction::class;
+    CapellCore::getPackage('test')->setupParams = ['sites'];
+
+    InstallPackagesAction::run(makeInstallInputData(packages: ['test'], seedDefaultData: true, siteName: 'Hartley Dental'), null, new NullProgressReporter);
+
+    expect(LifecycleRecorderAction::$calls)->toBe([
+        [
+            'package' => 'test',
+            'arguments' => ['--sites' => ['Hartley Dental']],
+        ],
+    ]);
+});
+
 it('passes skip permission sync into package setup commands during full install', function (): void {
     Storage::fake();
     app()->instance(MigrationFilesystemInterface::class, new FakeMigrationFilesystem);
 
-    Artisan::registerCommand(new class extends Command
+    $setupRuns = new ArrayObject;
+
+    Artisan::registerCommand(new class($setupRuns) extends Command
     {
         protected $signature = 'test:setup {--skip-permission-sync}';
 
+        public function __construct(private readonly ArrayObject $setupRuns)
+        {
+            parent::__construct();
+        }
+
         public function handle(): int
         {
-            return $this->option('skip-permission-sync') === true
-                ? self::SUCCESS
-                : self::FAILURE;
+            if ($this->option('skip-permission-sync') !== true) {
+                return self::FAILURE;
+            }
+
+            $this->setupRuns->append('skip-permission-sync');
+
+            return self::SUCCESS;
         }
     });
 
@@ -451,9 +520,12 @@ it('passes skip permission sync into package setup commands during full install'
     );
 
     $inputData = makeInstallInputData(packages: ['test'], seedDefaultData: true);
+    $reporter = recordingInstallReporter();
 
-    expect(fn (): mixed => InstallPackagesAction::run($inputData, null, new NullProgressReporter))
-        ->not->toThrow(Throwable::class);
+    InstallPackagesAction::run($inputData, null, $reporter);
+
+    expect($setupRuns->getArrayCopy())->toBe(['skip-permission-sync'])
+        ->and($reporter->errors)->toBeEmpty();
 });
 
 it('passes selected theme into package setup commands during full install', function (): void {

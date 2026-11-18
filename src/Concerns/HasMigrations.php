@@ -93,6 +93,17 @@ trait HasMigrations
             '2026_11_03_000001_add_node_columns_to_capell_security_remediation_runs_table',
             '2026_11_03_000001_create_capell_extension_quarantines_table',
             '2026_11_08_000001_add_source_to_page_revisions_table',
+            '2026_11_11_000001_add_standalone_visibility_indexes_to_pages_table',
+            '2026_11_11_000002_add_constraints_to_property_definitions_table',
+            '2026_11_11_000002_add_fallback_language_id_to_languages_table',
+            '2026_11_11_000010_add_media_foreign_key_to_property_values_tables',
+            '2026_11_11_000011_add_media_id_index_to_property_values_tables',
+            '2026_11_12_000001_create_capell_inbound_webhook_events_table',
+            '2026_11_14_000001_share_translation_media_with_translatable_owner',
+            '2026_11_14_000010_create_capell_ai_provenance_table',
+            '2026_11_15_000001_add_source_fingerprints_to_translations_table',
+            '2026_11_15_000010_create_capell_idempotency_keys_table',
+            '2026_11_15_000020_add_claim_tokens_to_capell_idempotency_keys_table',
         ];
     }
 

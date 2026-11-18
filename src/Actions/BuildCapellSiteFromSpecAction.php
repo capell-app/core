@@ -4,29 +4,32 @@ declare(strict_types=1);
 
 namespace Capell\Core\Actions;
 
+use Capell\Core\Actions\Properties\ValidatePromotedPropertyValuesAction;
+use Capell\Core\Contracts\Pageable;
 use Capell\Core\Data\SiteSpec\CapellSiteSpecData;
 use Capell\Core\Data\SiteSpec\CapellSiteSpecPageData;
 use Capell\Core\Events\SiteSpecPrivacyRepairing;
-use Capell\Core\EventSourcing\Actions\RecordPageVersionAction;
 use Capell\Core\EventSourcing\Enums\PageVersionSource;
-use Capell\Core\EventSourcing\Support\EventSourcedRegistry;
 use Capell\Core\EventSourcing\Support\PageVersionContext;
-use Capell\Core\Facades\CapellCore;
 use Capell\Core\Models\Language;
 use Capell\Core\Models\Page;
-use Capell\Core\Models\PageRevision;
 use Capell\Core\Models\Site;
 use Capell\Core\Models\Theme;
 use Capell\Core\Support\Creator\PageCreator;
-use Capell\Core\Support\Json\JsonCodec;
 use Capell\Core\Support\Publishing\PublishSentinel;
 use Capell\Core\Support\SiteSpec\PrivateSiteSpecSourceStore;
 use Capell\Core\Support\SiteSpec\SiteSpecApplierRegistry;
+use Capell\Core\Support\SiteSpec\SiteSpecHasher;
 use Capell\Core\Support\SiteSpec\SiteSpecMediaDownload;
+use Capell\Core\Support\SiteSpec\SiteSpecPageDataFactory;
+use Capell\Core\Support\SiteSpec\SiteSpecPageSlug;
 use Capell\Core\Support\Themes\ThemeInstallDefaultsRegistry;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Lorisleiva\Actions\Concerns\AsFake;
 use Lorisleiva\Actions\Concerns\AsObject;
 use RuntimeException;
@@ -44,10 +47,12 @@ final class BuildCapellSiteFromSpecAction
             PageVersionSource::Import,
             null,
             function () use ($spec, $repairPrivate, $keepPublished, $auditPrivate): Site {
-                $site = $this->build($spec, $repairPrivate, $keepPublished, $auditPrivate);
+                // One build per site name at a time, so the name check and the create cannot interleave.
+                $site = Cache::lock('capell:site-spec-build:' . hash('xxh128', mb_strtolower($spec->site->name)), 120)
+                    ->block(30, fn (): Site => $this->build($spec, $repairPrivate, $keepPublished, $auditPrivate));
 
                 if (! $auditPrivate) {
-                    $this->recordImportedVersions($site);
+                    RecordImportedPageVersionsAction::run($site);
                 }
 
                 return $site;
@@ -56,33 +61,12 @@ final class BuildCapellSiteFromSpecAction
     }
 
     /**
-     * Imported pages are created before their translations, so no save records
-     * a complete version. Give every imported page without one its first
-     * version, so editors can always return to what the import produced.
-     */
-    private function recordImportedVersions(Site $site): void
-    {
-        if (! resolve(EventSourcedRegistry::class)->isRegistered(Page::class)) {
-            return;
-        }
-
-        $site->pages()
-            ->whereNotIn('uuid', PageRevision::query()->select('page_uuid'))
-            ->with(['translations', 'pageUrls'])
-            ->each(static function (Page $page): void {
-                if ($page->translations->isNotEmpty()) {
-                    RecordPageVersionAction::run($page, PageVersionSource::Import);
-                }
-            });
-    }
-
-    /**
      * @param  list<string>  $keepPublished
      */
     private function build(CapellSiteSpecData $spec, bool $repairPrivate, array $keepPublished, bool $auditPrivate): Site
     {
         throw_if(($repairPrivate || $auditPrivate) && $spec->initialVisibility !== 'private', RuntimeException::class, 'Privacy audit and repair require the original private spec.');
-        $hash = $this->canonicalHash($spec);
+        $hash = SiteSpecHasher::hash($spec);
         $existing = Site::query()->where('meta->site_spec_hash', $hash)->first();
 
         if ($existing instanceof Site) {
@@ -103,8 +87,17 @@ final class BuildCapellSiteFromSpecAction
         throw_if($repairPrivate || $auditPrivate, RuntimeException::class, 'No existing import matches this original spec. No repair was applied.');
 
         throw_if($spec->initialVisibility === 'public' && ! $spec->acknowledgePublic, RuntimeException::class, 'Public site specs require explicit acknowledgement.');
-        $this->assertExtensionRequirementsAreInstalled($spec);
-        $this->assertReferencesCanBeApplied($spec);
+        AssertSiteSpecCanBeAppliedAction::run($spec);
+
+        $named = $this->siteNamed($spec);
+
+        if ($named instanceof Site) {
+            // An edited spec updates the site an earlier spec import created; any other site is refused.
+            $this->assertCreatedFromSpec($named, $spec);
+            ApplySiteSpecToSiteAction::run($spec, $named);
+
+            return $named->refresh();
+        }
 
         if ($spec->initialVisibility === 'private') {
             resolve(PrivateSiteSpecSourceStore::class)->put($hash, $spec);
@@ -119,6 +112,15 @@ final class BuildCapellSiteFromSpecAction
 
                 resolve(ThemeInstallDefaultsRegistry::class)->install($spec->theme->key);
 
+                // Re-checked under the transaction: CreateSiteAction reuses a site by name.
+                $raced = $this->siteNamed($spec, lock: true);
+
+                if ($raced instanceof Site) {
+                    $this->assertCreatedFromSpec($raced, $spec);
+
+                    throw new RuntimeException((string) __('capell-core::message.site_spec_site_name_raced', ['name' => $spec->site->name, 'id' => $raced->getKey()]));
+                }
+
                 $site = CreateSiteAction::run($spec->site->name, null, $language, collect([$language]), $theme);
                 $site->meta = array_merge($site->meta ?? [], array_filter([
                     'business_name' => $spec->site->businessName,
@@ -130,16 +132,13 @@ final class BuildCapellSiteFromSpecAction
                 $pagesBySlug = [];
 
                 foreach ($this->orderedPages($spec) as $index => $page) {
-                    $createdPage = $creator->createPage(
-                        $this->pageData($page, $language, $index === 0, $spec->initialVisibility === 'public'),
-                        $site,
-                        collect([$language]),
-                    );
+                    $createdPage = $this->createPage($creator, $page, $site, $language, $index === 0, $spec->initialVisibility === 'public');
                     throw_unless($createdPage instanceof Page, RuntimeException::class, sprintf(
                         'Site spec page [%s] did not resolve to a Capell page model.',
                         $page->slug,
                     ));
                     SetupPageUrlsAction::run($createdPage);
+                    ApplySiteSpecPagePropertiesAction::run($createdPage, $page->slug, $page->properties, (int) $language->getKey());
                     $pagesBySlug[$page->slug] = $createdPage;
                 }
 
@@ -167,43 +166,30 @@ final class BuildCapellSiteFromSpecAction
         }
     }
 
-    private function assertExtensionRequirementsAreInstalled(CapellSiteSpecData $spec): void
+    private function siteNamed(CapellSiteSpecData $spec, bool $lock = false): ?Site
     {
-        $missingExtensions = array_values(array_filter(
-            array_unique($spec->extensions),
-            static fn (string $extension): bool => ! CapellCore::isPackageInstalled($extension),
-        ));
+        $query = Site::query()->where('name', $spec->site->name);
 
-        throw_if($missingExtensions !== [], RuntimeException::class, sprintf(
-            'Install the required Capell extension(s) before importing this site spec: %s.',
-            implode(', ', $missingExtensions),
-        ));
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        return $query->first();
     }
 
-    private function assertReferencesCanBeApplied(CapellSiteSpecData $spec): void
+    /**
+     * A site an earlier spec import created carries that import's hash. A site
+     * without one was made some other way, so the import must not write into it.
+     */
+    private function assertCreatedFromSpec(Site $site, CapellSiteSpecData $spec): void
     {
-        $pageSlugs = array_map(static fn (CapellSiteSpecPageData $page): string => $page->slug, $spec->pages);
+        $meta = $site->meta ?? [];
+        $fromSpec = is_string($meta['site_spec_hash'] ?? null) || is_string($meta['site_spec_applied_hash'] ?? null);
 
-        foreach ($spec->navigations as $navigation) {
-            foreach ($navigation->pageSlugs as $pageSlug) {
-                throw_unless(in_array($pageSlug, $pageSlugs, true), RuntimeException::class, sprintf(
-                    'Navigation [%s] references missing page slug [%s].',
-                    $navigation->key,
-                    $pageSlug,
-                ));
-            }
-        }
-
-        foreach (array_keys($spec->media->images) as $pageSlug) {
-            throw_unless(is_string($pageSlug) && in_array($pageSlug, $pageSlugs, true), RuntimeException::class, sprintf(
-                'Site spec media references missing page slug [%s].',
-                (string) $pageSlug,
-            ));
-        }
-
-        if ($spec->navigations !== []) {
-            throw_unless(resolve(SiteSpecApplierRegistry::class)->has('navigation'), RuntimeException::class, 'The site spec contains navigation data, but no installed package registered the [navigation] site spec applier.');
-        }
+        throw_unless($fromSpec, RuntimeException::class, (string) __('capell-core::message.site_spec_site_name_taken', [
+            'name' => $spec->site->name,
+            'id' => $site->getKey(),
+        ]));
     }
 
     /** @param list<SiteSpecMediaDownload> $downloads */
@@ -213,6 +199,30 @@ final class BuildCapellSiteFromSpecAction
             if (is_file($download->path)) {
                 unlink($download->path);
             }
+        }
+    }
+
+    /**
+     * Creates one spec page. A promoted field checked against its property's
+     * rules before the page row is written is reported against the page's
+     * `properties`, like every other property error in the import.
+     *
+     * @return Pageable<covariant Model>
+     */
+    private function createPage(PageCreator $creator, CapellSiteSpecPageData $page, Site $site, Language $language, bool $first, bool $public): Pageable
+    {
+        try {
+            return $creator->createPage(SiteSpecPageDataFactory::make($page, $language, $first, $public), $site, collect([$language]));
+        } catch (ValidationException $validationException) {
+            $errors = [];
+
+            foreach ($validationException->errors() as $key => $messages) {
+                $errors[str_starts_with((string) $key, ValidatePromotedPropertyValuesAction::ERROR_KEY_PREFIX)
+                    ? sprintf('pages.%s.%s', $page->slug, $key)
+                    : $key] = $messages;
+            }
+
+            throw ValidationException::withMessages($errors);
         }
     }
 
@@ -229,58 +239,16 @@ final class BuildCapellSiteFromSpecAction
 
     private function buildTheme(CapellSiteSpecData $spec): Theme
     {
-        $theme = CreateThemeAction::run($spec->theme->key, ucfirst($spec->theme->key));
-        $meta = is_array($theme->meta) ? $theme->meta : [];
-        $colors = array_filter($spec->theme->colors->toArray(), filled(...));
-        $theme->meta = array_merge($meta, $colors === [] ? [] : ['colors' => array_merge($meta['colors'] ?? [], $colors)], array_filter([
-            'font_family' => $spec->theme->fontFamily,
-            'link_color' => $spec->theme->linkColor,
-            'link_color_active' => $spec->theme->linkColorActive,
-            'container' => $spec->theme->container,
-        ]));
-        $theme->custom_css = $spec->theme->customCss ?: $theme->custom_css;
-        $theme->save();
-
-        return $theme->refresh();
+        return MergeSiteSpecThemeSettingsAction::run(
+            CreateThemeAction::run($spec->theme->key, ucfirst($spec->theme->key)),
+            $spec,
+        );
     }
 
     /** @return list<CapellSiteSpecPageData> */
     private function orderedPages(CapellSiteSpecData $spec): array
     {
         return array_values(collect($spec->pages)->sortBy('order')->all());
-    }
-
-    /** @return array<string, mixed> */
-    private function pageData(CapellSiteSpecPageData $page, Language $language, bool $first, bool $public): array
-    {
-        $content = collect($page->sections)->sortBy('order')->map(function ($section): string {
-            $heading = filled($section->title) ? '<h2>' . e($section->title) . '</h2>' : '';
-
-            return $heading . SanitizeSiteSpecSectionHtmlAction::run($section->content);
-        })->implode('');
-
-        if (! $public && $first) {
-            $content = '<h1>Coming soon</h1><p>This site is being prepared.</p>';
-        }
-
-        return [
-            'name' => $page->name,
-            'type_key' => $page->pageType,
-            'layout_key' => $first ? 'home' : 'default',
-            'visible_from' => $public || $first ? now()->subDay()->toDateString() : PublishSentinel::draftValue()->toDateString(),
-            'meta' => ! $public && $first
-                ? ['noindex' => true, 'robots' => 'noindex,nofollow']
-                : array_merge($page->meta, ['visibility' => $page->visibility, 'noindex' => ! $public], $public ? [] : ['robots' => 'noindex,nofollow']),
-            'translations' => [$language->code => [
-                'title' => ! $public && $first ? 'Coming soon' : $page->title,
-                'content' => $content,
-                'summary' => ! $public && $first ? 'This site is being prepared.' : $page->description,
-                'slug' => ltrim($page->slug, '/'),
-                'meta' => ! $public && $first
-                    ? ['title' => 'Coming soon', 'description' => 'This site is being prepared.', 'robots' => 'noindex,nofollow']
-                    : array_merge(['description' => $page->description, 'robots' => 'index,follow'], $page->meta, $public ? [] : ['robots' => 'noindex,nofollow']),
-            ]],
-        ];
     }
 
     /** @param list<string> $keepPublished */
@@ -295,7 +263,7 @@ final class BuildCapellSiteFromSpecAction
                     continue;
                 }
 
-                $slug = $pageSpec->meta['slug'] ?? ltrim($pageSpec->slug, '/');
+                $slug = SiteSpecPageSlug::for($pageSpec);
                 $pages = $site->pages()->whereHas('translations', fn (Builder $query): Builder => $query
                     ->where('language_id', $site->language_id)->where('meta->slug', $slug))->lockForUpdate()->get();
                 throw_unless($pages->count() === 1, RuntimeException::class, 'Cannot identify the original imported page: ' . $pageSpec->slug);
@@ -318,7 +286,7 @@ final class BuildCapellSiteFromSpecAction
                     RuntimeException::class,
                     'The homepage was edited after import; review it and explicitly keep it before repair.',
                 );
-                $safe = $this->pageData($pageSpec, $site->language, true, false);
+                $safe = SiteSpecPageDataFactory::make($pageSpec, $site->language, true, false);
                 $page->update(['meta' => $safe['meta']]);
                 $translation->update(['meta' => array_merge($safe['translations'][$site->language->code]['meta'], [
                     'slug' => $translation->slug, 'summary' => 'This site is being prepared.',
@@ -335,25 +303,5 @@ final class BuildCapellSiteFromSpecAction
         });
 
         return $site->refresh();
-    }
-
-    private function canonicalHash(CapellSiteSpecData $spec): string
-    {
-        $payload = $spec->toArray();
-        $sort = function (array &$value) use (&$sort): void {
-            foreach ($value as &$nested) {
-                if (is_array($nested)) {
-                    $sort($nested);
-                }
-            }
-
-            unset($nested);
-            if (! array_is_list($value)) {
-                ksort($value);
-            }
-        };
-        $sort($payload);
-
-        return hash('sha256', JsonCodec::encode($payload));
     }
 }

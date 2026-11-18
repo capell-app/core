@@ -26,6 +26,10 @@
         "required": ["capell-version"]
     },
     "properties": {
+        "$schema": {
+            "type": "string",
+            "description": "Optional pointer to this schema for editor tooling. Capell ignores the value."
+        },
         "manifest-version": {
             "const": 3
         },
@@ -79,7 +83,7 @@
                 },
                 "tier": {
                     "type": "string",
-                    "minLength": 1
+                    "enum": ["free", "premium", "core"]
                 },
                 "bundle": {
                     "type": ["string", "null"]
@@ -327,6 +331,48 @@
         "capabilities": {
             "$ref": "#/$defs/stringList"
         },
+        "capabilityContracts": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "provides": {
+                    "$ref": "#/$defs/capabilityContractVersions"
+                },
+                "consumes": {
+                    "$ref": "#/$defs/capabilityContractVersions"
+                }
+            }
+        },
+        "privacy": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Consent purposes the package asks about, each mapped to an optional consent category. Site configuration (capell.privacy.consent.purposes) overrides them.",
+            "properties": {
+                "purposes": {
+                    "type": "object",
+                    "propertyNames": {
+                        "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+                        "not": {
+                            "enum": [
+                                "essential",
+                                "functional",
+                                "preferences",
+                                "analytics",
+                                "marketing"
+                            ]
+                        }
+                    },
+                    "additionalProperties": {
+                        "enum": [
+                            "functional",
+                            "preferences",
+                            "analytics",
+                            "marketing"
+                        ]
+                    }
+                }
+            }
+        },
         "security": {
             "type": "object",
             "additionalProperties": false,
@@ -419,6 +465,31 @@
                         }
                     }
                 },
+                "throttles": {
+                    "description": "Rate limits for public endpoints, keyed by capell-<package>-<purpose>. Once declared, every publicSurface.throttledRoutes entry must be covered by one purpose.",
+                    "type": "object",
+                    "propertyNames": {
+                        "pattern": "^capell-[a-z0-9]+(?:-[a-z0-9]+)+$"
+                    },
+                    "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["maxAttempts", "decaySeconds", "routes"],
+                        "properties": {
+                            "maxAttempts": {
+                                "type": "integer",
+                                "minimum": 1
+                            },
+                            "decaySeconds": {
+                                "type": "integer",
+                                "minimum": 1
+                            },
+                            "routes": {
+                                "$ref": "#/$defs/stringList"
+                            }
+                        }
+                    }
+                },
                 "manual": {
                     "description": "Declared, unverified route protection: routes that check their signature or token inside their own code rather than in route middleware. Each entry is a route identity (METHOD /uri (name)) with a reviewed declaration in the publishing repository. These routes are never verified signed or tokenized routes, so they never appear in publicSurface.signedRoutes or publicSurface.tokenizedRoutes.",
                     "type": "object",
@@ -494,18 +565,44 @@
                         "invalidationSources": {
                             "type": "array",
                             "items": {
-                                "type": "object",
-                                "additionalProperties": true,
-                                "required": ["model", "events"],
-                                "properties": {
-                                    "model": {
-                                        "type": "string",
-                                        "minLength": 1
+                                "oneOf": [
+                                    {
+                                        "type": "object",
+                                        "additionalProperties": true,
+                                        "required": ["model", "events"],
+                                        "properties": {
+                                            "model": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            },
+                                            "events": {
+                                                "$ref": "#/$defs/stringList"
+                                            }
+                                        }
                                     },
-                                    "events": {
-                                        "$ref": "#/$defs/stringList"
+                                    {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": ["settings"],
+                                        "properties": {
+                                            "settings": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": ["event"],
+                                        "properties": {
+                                            "event": {
+                                                "type": "string",
+                                                "minLength": 1
+                                            }
+                                        }
                                     }
-                                }
+                                ]
                             }
                         },
                         "queueInvalidation": {
@@ -548,13 +645,30 @@
             ],
             "properties": {
                 "proposedLicense": {
-                    "type": ["string", "null"]
+                    "type": ["string", "null"],
+                    "enum": ["free", "paid", "included", "private", null]
                 },
                 "requestedCertification": {
-                    "type": ["string", "null"]
+                    "type": ["string", "null"],
+                    "enum": [
+                        "uncertified",
+                        "community",
+                        "partner",
+                        "first-party",
+                        null
+                    ]
                 },
                 "supportPolicy": {
-                    "type": ["string", "null"]
+                    "type": ["string", "null"],
+                    "enum": [
+                        "community",
+                        "standard",
+                        "priority",
+                        "capell-first-party",
+                        "project",
+                        "author",
+                        null
+                    ]
                 },
                 "privateDocsRequested": {
                     "type": "boolean"
@@ -641,6 +755,71 @@
         "defaultSelected": {
             "type": "boolean"
         },
+        "roles": {
+            "type": "array",
+            "uniqueItems": true,
+            "description": "Jobs this package performs for Core, so Core finds it by role instead of by name.",
+            "items": {
+                "enum": [
+                    "default-theme",
+                    "workflow-final",
+                    "developer-tooling",
+                    "site-social-fields",
+                    "scaffold-full-profile"
+                ]
+            }
+        },
+        "rolePriority": {
+            "type": "integer",
+            "default": 0,
+            "description": "Orders packages that share a role; the lower value runs first."
+        },
+        "install": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Install-time metadata Core reads without knowing the package by name.",
+            "properties": {
+                "tips": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["variant", "priority"],
+                        "properties": {
+                            "variant": {
+                                "type": "string",
+                                "minLength": 1
+                            },
+                            "priority": {
+                                "type": "integer"
+                            }
+                        }
+                    }
+                },
+                "legacyTables": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["name", "configKey", "migration"],
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "minLength": 1
+                            },
+                            "configKey": {
+                                "type": "string",
+                                "minLength": 1
+                            },
+                            "migration": {
+                                "type": "string",
+                                "minLength": 1
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "demo": {
             "type": "boolean"
         },
@@ -652,6 +831,23 @@
         }
     },
     "$defs": {
+        "capabilityContractVersions": {
+            "type": "object",
+            "propertyNames": {
+                "enum": [
+                    "form-catalogue",
+                    "form-submissions",
+                    "site-access-registrations",
+                    "publishing-workflow",
+                    "campaign-conversions",
+                    "layout-widget-host"
+                ]
+            },
+            "additionalProperties": {
+                "type": "integer",
+                "minimum": 1
+            }
+        },
         "stringList": {
             "type": "array",
             "items": {

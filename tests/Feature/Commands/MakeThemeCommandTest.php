@@ -3,9 +3,11 @@
 declare(strict_types=1);
 
 use Capell\Core\Actions\Extensions\AuditExtensionContractsAction;
+use Capell\Core\Enums\PackageRole;
 use Capell\Core\Enums\VendorAssetEnum;
 use Capell\Core\Facades\CapellCore;
 use Capell\Core\Support\Packages\AbstractPackageServiceProvider;
+use Capell\Core\Support\Packages\BundledFoundationCatalogue;
 use Capell\Core\Testing\ExtensionTestHarness;
 use Capell\Core\ThemeStudio\Theme\ThemeRegistry;
 use Capell\Tests\Support\OwnedApplicationPaths;
@@ -14,6 +16,9 @@ use Symfony\Component\Console\Command\Command;
 
 beforeEach(function (): void {
     $this->workspace = new OwnedApplicationPaths(app());
+
+    // A scaffolded theme builds on whichever package declares the default-theme role.
+    registerRolePackage('vendor/starter-theme', PackageRole::DefaultTheme);
 });
 
 afterEach(function (): void {
@@ -62,15 +67,15 @@ it('creates a project-local theme package scaffold', function (): void {
         ->and($manifest['capabilities'])->toBe(['frontend-rendering', 'tailwind-assets'])
         ->and($manifest['providers']['runtime'])->toBe(['App\\EquidynamicsTheme\\EquidynamicsThemeServiceProvider'])
         ->and($composer['extra']['laravel']['providers'])->toBe(['App\\EquidynamicsTheme\\EquidynamicsThemeServiceProvider'])
-        ->and($composer['require'])->toHaveKey('capell-app/theme-foundation')
+        ->and($composer['require'])->toHaveKey('vendor/starter-theme')
         ->and($composer['require-dev'])->toHaveKeys(['orchestra/testbench', 'pestphp/pest', 'pestphp/pest-plugin-laravel'])
         ->and($composer['scripts']['test'])->toBe('pest');
 
     $hero = Blade::render((string) file_get_contents($heroViewPath), [
         'heading' => 'Launch heading', 'eyebrow' => 'Public eyebrow', 'body' => '<script>private-content</script>',
     ]);
-    expect($hero)->toContain('Launch heading', 'Public eyebrow', '&lt;script&gt;private-content&lt;/script&gt;')
-        ->not->toContain('<script>')->not->toContain('data-capell-edit')->not->toContain('wire:')->not->toContain('signed');
+    expect($hero)->toContain('Launch heading', '&lt;script&gt;private-content&lt;/script&gt;')
+        ->not->toContain('Public eyebrow')->not->toContain('<script>')->not->toContain('data-capell-edit')->not->toContain('wire:')->not->toContain('signed');
     $page = Blade::render((string) file_get_contents($themeDirectory . '/resources/views/page.blade.php'), [
         'content' => 'Hydrated page content',
     ]);
@@ -208,4 +213,44 @@ it('warns when an absolute scaffold path lies outside the project', function ():
 
     expect($readme)->toContain($outside . '/equidynamics-theme')
         ->toContain('outside this project');
+});
+
+it('builds a scaffolded theme on the package that declares the default-theme role', function (): void {
+    $packagesDirectory = sys_get_temp_dir() . '/capell-make-theme-role-' . bin2hex(random_bytes(6));
+    mkdir($packagesDirectory, 0755, true);
+
+    artisanCommand('capell:make-theme', [
+        'theme' => 'rolebased',
+        '--package' => 'app/rolebased-theme',
+        '--path' => $packagesDirectory,
+        '--local' => true,
+    ])->assertExitCode(Command::SUCCESS);
+
+    $manifest = json_decode((string) file_get_contents($packagesDirectory . '/rolebased-theme/capell.json'), true, flags: JSON_THROW_ON_ERROR);
+    $composer = json_decode((string) file_get_contents($packagesDirectory . '/rolebased-theme/composer.json'), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($manifest['dependencies']['requires'])->toContain('vendor/starter-theme')
+        ->and($composer['require'])->toHaveKey('vendor/starter-theme')
+        ->not->toHaveKey('capell-app/theme-foundation');
+});
+
+it('builds a scaffolded theme on the bundled foundation default theme when no catalogue is readable', function (): void {
+    CapellCore::clearPackages();
+    bindCachedCatalogue([]);
+    $bundledDefault = BundledFoundationCatalogue::entries()
+        ->first(fn (array $entry): bool => in_array(PackageRole::DefaultTheme->value, $entry['roles'] ?? [], true));
+    assert(is_array($bundledDefault) && is_string($bundledDefault['name'] ?? null));
+    $packagesDirectory = sys_get_temp_dir() . '/capell-make-theme-bundled-' . bin2hex(random_bytes(6));
+    mkdir($packagesDirectory, 0755, true);
+
+    artisanCommand('capell:make-theme', [
+        'theme' => 'offline',
+        '--package' => 'app/offline-theme',
+        '--path' => $packagesDirectory,
+        '--local' => true,
+    ])->assertExitCode(Command::SUCCESS);
+
+    $composer = json_decode((string) file_get_contents($packagesDirectory . '/offline-theme/composer.json'), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($composer['require'])->toHaveKey($bundledDefault['name']);
 });

@@ -8,6 +8,9 @@ return [
     'version' => env('CAPELL_VERSION'),
 
     'extensions' => [
+        // Explicit package names, honoured only in the local application environment.
+        'local_development' => [],
+        'marketplace_instance_id' => env('CAPELL_MARKETPLACE_INSTANCE_ID'),
         'verification' => [
             // Leniency applies to local install and enable paths only; Marketplace is always strict.
             'strict' => (bool) env('CAPELL_EXTENSION_VERIFICATION_STRICT', true),
@@ -21,6 +24,12 @@ return [
         // Map a Capell base table name to its complete database table name.
         'table_aliases' => [],
         'adopted_tables' => [],
+        // Composer packages that may already hold tables a Capell package declares in its
+        // manifest `install.legacyTables`. While one is installed, every declared table is
+        // checked for a collision, whether or not its package is in the install plan.
+        'legacy_table_owners' => [
+            'spatie/laravel-tags',
+        ],
         // Tables owned by external packages that do not expose table-name config.
         'external_tables' => [
             'media' => 'media',
@@ -59,6 +68,48 @@ return [
             'path' => env('CAPELL_HEALTH_DISK_PATH'),
             'minimum_free_bytes' => (int) env('CAPELL_HEALTH_MINIMUM_FREE_BYTES', 1073741824),
             'timeout_seconds' => (int) env('CAPELL_HEALTH_DISK_TIMEOUT_SECONDS', 10),
+        ],
+        // Samples this server once a minute and warns when load, memory, swap or the
+        // scheduler's own CPU use stays high. Notifications are off until switched on.
+        'host' => [
+            'enabled' => (bool) env('CAPELL_HEALTH_HOST_ENABLED', true),
+            // Consecutive samples (one a minute) that must agree before the status changes.
+            'sustained_samples' => (int) env('CAPELL_HEALTH_HOST_SUSTAINED_SAMPLES', 5),
+            'history_samples' => (int) env('CAPELL_HEALTH_HOST_HISTORY_SAMPLES', 60),
+            // Five-minute load average divided by the number of CPU cores.
+            'load' => [
+                'warning_ratio' => (float) env('CAPELL_HEALTH_HOST_LOAD_WARNING', 0.75),
+                'critical_ratio' => (float) env('CAPELL_HEALTH_HOST_LOAD_CRITICAL', 1.5),
+            ],
+            // Percentage of memory still available to programs.
+            'memory' => [
+                'warning_available_percent' => (float) env('CAPELL_HEALTH_HOST_MEMORY_WARNING', 15),
+                'critical_available_percent' => (float) env('CAPELL_HEALTH_HOST_MEMORY_CRITICAL', 7),
+            ],
+            'swap' => [
+                'warning_used_percent' => (float) env('CAPELL_HEALTH_HOST_SWAP_WARNING', 60),
+                'critical_used_percent' => (float) env('CAPELL_HEALTH_HOST_SWAP_CRITICAL', 90),
+            ],
+            // CPU seconds one scheduler run uses, as a share of what the cores can supply in a minute,
+            // and how long a run takes. A run that lasts a minute overlaps the next one.
+            'scheduler' => [
+                'warning_cpu_ratio' => (float) env('CAPELL_HEALTH_HOST_SCHEDULER_CPU_WARNING', 0.3),
+                'critical_cpu_ratio' => (float) env('CAPELL_HEALTH_HOST_SCHEDULER_CPU_CRITICAL', 0.6),
+                'warning_wall_seconds' => (int) env('CAPELL_HEALTH_HOST_SCHEDULER_WALL_WARNING', 50),
+                'critical_wall_seconds' => (int) env('CAPELL_HEALTH_HOST_SCHEDULER_WALL_CRITICAL', 90),
+            ],
+            'notifications' => [
+                'enabled' => (bool) env('CAPELL_HEALTH_HOST_NOTIFY', false),
+                // Any of: mail, webhook.
+                'channels' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('CAPELL_HEALTH_HOST_NOTIFY_CHANNELS', 'mail'))))),
+                'mail_to' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('CAPELL_HEALTH_HOST_NOTIFY_MAIL_TO', ''))))),
+                // Receives a JSON body with a "text" field, which Slack and Mattermost incoming webhooks accept.
+                'webhook_url' => env('CAPELL_HEALTH_HOST_NOTIFY_WEBHOOK_URL'),
+                // The lowest status that sends a message: warning or critical.
+                'minimum_status' => env('CAPELL_HEALTH_HOST_NOTIFY_MINIMUM', 'warning'),
+                'reminder_minutes' => (int) env('CAPELL_HEALTH_HOST_NOTIFY_REMINDER_MINUTES', 360),
+                'notify_on_recovery' => (bool) env('CAPELL_HEALTH_HOST_NOTIFY_RECOVERY', true),
+            ],
         ],
     ],
 
@@ -153,8 +204,9 @@ return [
         // <sitemapindex> index file.  Google's limit is 50 000.
         'max_urls_per_file' => env('CAPELL_SITEMAP_MAX_URLS_PER_FILE', 50000),
         // Public path appended to the domain base URL when building chunk
-        // <loc> entries inside a sitemap index (e.g. /sitemap-xml).
-        'xml_path' => env('CAPELL_SITEMAP_XML_PATH', '/sitemap-xml'),
+        // <loc> entries inside a sitemap index. /sitemap.xml is canonical;
+        // the legacy /sitemap-xml path is 301-redirected to it by Site Discovery.
+        'xml_path' => env('CAPELL_SITEMAP_XML_PATH', '/sitemap.xml'),
     ],
 
     'static_site' => [
@@ -189,6 +241,39 @@ return [
         'visitor_retention_days' => (int) env('CAPELL_ANALYTICS_VISITOR_RETENTION_DAYS', 30),
         'daily_rollup_retention_days' => (int) env('CAPELL_ANALYTICS_DAILY_ROLLUP_RETENTION_DAYS', 365),
         'rate_limit_per_minute' => (int) env('CAPELL_ANALYTICS_RATE_LIMIT_PER_MINUTE', 30),
+    ],
+
+    // Consent decisions when no consent manager (such as Privacy Center) is installed, and the
+    // key for hashed privacy identifiers.
+    // Pages load window.CapellPrivacy from a cacheable script; it sets no cookie.
+    'privacy' => [
+        // Counts aggregate page views without consent: no cookie and no visitor identifier.
+        // Visitor markers are still recorded only when analytics consent is granted, and an
+        // explicit refusal, Global Privacy Control or Do Not Track stops the count.
+        'first_party_counter' => env('CAPELL_PRIVACY_FIRST_PARTY_COUNTER', true),
+        'consent' => [
+            'runtime' => env('CAPELL_PRIVACY_CONSENT_RUNTIME', true),
+            // granted, denied or undecided per category; essential is always granted.
+            // Nobody has been asked, so every optional category starts undecided, which
+            // keeps its scripts and signals off.
+            'defaults' => [
+                'functional' => env('CAPELL_PRIVACY_CONSENT_FUNCTIONAL', 'undecided'),
+                'preferences' => env('CAPELL_PRIVACY_CONSENT_PREFERENCES', 'undecided'),
+                'analytics' => env('CAPELL_PRIVACY_CONSENT_ANALYTICS', 'undecided'),
+                'marketing' => env('CAPELL_PRIVACY_CONSENT_MARKETING', 'undecided'),
+            ],
+            // A Global Privacy Control or Do Not Track signal refuses these categories.
+            'opt_out_signal_categories' => ['analytics', 'marketing'],
+            // Named purposes mapped to their category, for example 'youtube' => 'marketing'.
+            'purposes' => [],
+        ],
+        // Key for the hashes packages store people's email addresses under, so they look
+        // people up without keeping the address in an index. Falls back to app.key. Lookups
+        // also try the previous keys below, app.key and app.previous_keys. Never remove a key
+        // until RehashPrivacyIdentifiersAction has moved every row off it: rows hashed under a
+        // removed key can no longer be found by an export or erasure.
+        'identifier_key' => env('CAPELL_PRIVACY_IDENTIFIER_KEY'),
+        'identifier_previous_keys' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('CAPELL_PRIVACY_IDENTIFIER_PREVIOUS_KEYS', ''))))),
     ],
 
     'agent' => [
@@ -303,6 +388,12 @@ return [
     ],
     // Cached plugin packages list
     'plugins' => [],
+    // Packages that no longer exist and may remain only in an upgrade ledger. The version audit
+    // ignores them, so a retired package is not reported as a missing install. The installer
+    // is always ignored; list others here.
+    'retired_packages' => [
+        'capell-app/url-manager',
+    ],
 
     'media' => [
         'backend' => env('CAPELL_MEDIA_BACKEND', 'spatie'),
@@ -348,6 +439,9 @@ return [
         'welcome_routes_web_path' => env('CAPELL_INSTALL_WELCOME_ROUTES_WEB_PATH', base_path('routes/web.php')),
         'welcome_env_path' => env('CAPELL_INSTALL_WELCOME_ENV_PATH', base_path('.env')),
 
+        // Test harnesses set this so the installer leaves the shared framework caches in place; a real install never does.
+        'skip_optimize_clear' => (bool) env('CAPELL_INSTALL_SKIP_OPTIMIZE_CLEAR', false),
+
         // Install suites, offered as "What are you building?" in the CLI installer.
         // `packages` always install; `recommended` entries are pre-ticked and `optional`
         // entries are offered unticked, each with a one-line reason (package => reason).
@@ -364,6 +458,7 @@ return [
                 'suite_description' => 'Publish articles with archives and tags, and be found in search.',
                 'packages' => ['capell-app/admin', 'capell-app/frontend'],
                 'recommended' => [
+                    'capell-app/site-discovery' => 'Serve an XML sitemap so search engines find every published page.',
                     'capell-app/blog' => 'Article publishing, archive pages and article widgets.',
                     'capell-app/seo-suite' => 'SEO scoring, structured data and redirect management.',
                     'capell-app/search' => 'A themeable results page and header search field.',
@@ -384,6 +479,7 @@ return [
                 'suite_description' => 'A content-managed site with forms, navigation and SEO tooling.',
                 'packages' => ['capell-app/admin', 'capell-app/frontend'],
                 'recommended' => [
+                    'capell-app/site-discovery' => 'Serve an XML sitemap so search engines find every published page.',
                     'capell-app/form-builder' => 'Spam-filtered forms with a submissions inbox.',
                     'capell-app/navigation' => 'A visual menu builder for every site and language.',
                     'capell-app/seo-suite' => 'SEO scoring, structured data and redirect management.',
@@ -404,6 +500,7 @@ return [
                 'suite_description' => 'A structured knowledge base that readers can search and browse.',
                 'packages' => ['capell-app/admin', 'capell-app/frontend'],
                 'recommended' => [
+                    'capell-app/site-discovery' => 'Serve an XML sitemap so search engines find every published page.',
                     'capell-app/knowledge-base' => 'Collections of articles grouped into a public help centre.',
                     'capell-app/search' => 'A themeable results page and header search field.',
                     'capell-app/navigation' => 'A visual menu builder for every site and language.',
@@ -423,6 +520,7 @@ return [
                 'suite_description' => 'Visual page building with a media library and safe publishing.',
                 'packages' => ['capell-app/admin', 'capell-app/frontend'],
                 'recommended' => [
+                    'capell-app/site-discovery' => 'Serve an XML sitemap so search engines find every published page.',
                     'capell-app/layout-builder' => 'Compose pages visually from reusable widgets and areas.',
                     'capell-app/media-library' => 'One consistent media field and a media-health dashboard.',
                     'capell-app/form-builder' => 'Spam-filtered forms with a submissions inbox.',

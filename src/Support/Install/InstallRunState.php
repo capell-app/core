@@ -6,6 +6,7 @@ namespace Capell\Core\Support\Install;
 
 use Capell\Core\Actions\Install\DetectInitialInstallationAction;
 use Capell\Core\Contracts\ProgressReporter;
+use Capell\Core\Data\Install\InstallStoppedStepData;
 use Capell\Core\Data\InstallInputData;
 use Capell\Core\Data\PackageData;
 use Capell\Core\Facades\CapellCore;
@@ -40,6 +41,8 @@ final class InstallRunState
         public readonly ProgressReporter $reporter,
         private ?int $resolvedUserId = null,
         private bool $packageMetadataRefreshed = false,
+        public readonly ?string $resumeCommand = null,
+        public readonly bool $passwordOmitted = false,
     ) {}
 
     public static function rememberInitialInstallation(bool $initial): void
@@ -88,6 +91,35 @@ final class InstallRunState
             $state = self::originState();
             unset($state['initial_installation']);
             self::saveOriginState($state);
+        });
+    }
+
+    public static function recordStoppedStep(InstallStoppedStepData $step): void
+    {
+        self::exclusively(static function () use ($step): void {
+            $state = self::progressState();
+            $state['stopped_step'] = $step->toArray();
+            self::saveProgressState($state);
+        });
+    }
+
+    public static function stoppedStep(): ?InstallStoppedStepData
+    {
+        $step = self::progressState()['stopped_step'] ?? null;
+
+        if (! is_array($step) || ! is_string($step['key'] ?? null) || ! is_string($step['label'] ?? null) || ! is_string($step['resumeCommand'] ?? null)) {
+            return null;
+        }
+
+        return new InstallStoppedStepData($step['key'], $step['label'], $step['resumeCommand'], ($step['passwordOmitted'] ?? false) === true);
+    }
+
+    public static function clearStoppedStep(): void
+    {
+        self::exclusively(static function (): void {
+            $state = self::progressState();
+            unset($state['stopped_step']);
+            self::saveProgressState($state);
         });
     }
 

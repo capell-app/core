@@ -2,8 +2,11 @@
 
 declare(strict_types=1);
 
+use Capell\Core\Contracts\Security\ResolvesHostAddresses;
 use Capell\Core\Facades\CapellCore;
 use Capell\Core\Support\Plugins\PluginPackagesFetcher;
+use GuzzleHttp\Promise\PromiseInterface;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Sleep;
 
@@ -82,6 +85,9 @@ it('rejects localhost plugin package source urls before sending a request', func
     'loopback' => 'https://127.0.0.1/packages.json',
     'private' => 'https://10.0.0.5/packages.json',
     'metadata' => 'https://169.254.169.254/packages.json',
+    'carrier-grade NAT' => 'https://100.64.0.1/packages.json',
+    'benchmarking' => 'https://198.18.0.1/packages.json',
+    'IETF protocol assignment' => 'https://192.0.0.8/packages.json',
 ]);
 
 it('rejects oversized plugin package responses before decoding json', function (): void {
@@ -127,6 +133,46 @@ it('reads current catalogue identities tiers versions and all pages', function (
             'purchaseUrl' => 'https://capell.app/marketplace/address',
         ])
         ->and($packages->pluck('requirements', 'name')->get('capell-app/address'))->toBe(['capell-app/admin']);
+});
+
+it('carries default selection, roles, install tips and legacy tables from a catalogue manifest', function (): void {
+    config(['capell.plugins_source_url' => 'https://catalogue.capell.test/extensions']);
+    Http::fake([
+        'https://catalogue.capell.test/extensions' => Http::response([
+            'data' => [
+                [
+                    'composer_name' => 'vendor/declares', 'kind' => 'tool',
+                    'manifest' => [
+                        'defaultSelected' => true,
+                        'roles' => ['workflow-final'],
+                        'rolePriority' => 4,
+                        'install' => [
+                            'tips' => [['variant' => 'package_blog', 'priority' => 10]],
+                            'legacyTables' => [['name' => 'labels', 'configKey' => 'labels.table', 'migration' => 'create_labels']],
+                        ],
+                    ],
+                ],
+                ['composer_name' => 'vendor/silent', 'kind' => 'tool', 'manifest' => ['roles' => 'not-a-list', 'install' => 'nope']],
+            ],
+            'meta' => ['last_page' => 1],
+        ]),
+    ]);
+
+    $packages = resolve(PluginPackagesFetcher::class)->fetch(force: true)->keyBy('name');
+
+    expect($packages->get('vendor/declares'))->toMatchArray([
+        'defaultSelected' => true,
+        'roles' => ['workflow-final'],
+        'rolePriority' => 4,
+        'installTips' => [['variant' => 'package_blog', 'priority' => 10]],
+        'legacyTables' => [['name' => 'labels', 'configKey' => 'labels.table', 'migration' => 'create_labels']],
+    ])->and($packages->get('vendor/silent'))->toMatchArray([
+        'defaultSelected' => false,
+        'roles' => [],
+        'rolePriority' => null,
+        'installTips' => [],
+        'legacyTables' => [],
+    ]);
 });
 
 it('does not reuse a catalogue cached for a different source', function (): void {
@@ -237,3 +283,54 @@ it('expires catalogue decisions in one process without flushing local cache', fu
     expect($fetcher->fetch()->pluck('name')->all())->toBe(['vendor/recovered']);
     Http::assertSentCount(2);
 })->with(['cooldown' => true, 'valid empty' => false]);
+
+it('refuses a catalogue host whose address changes to a private one after the source check', function (): void {
+    config(['capell.plugins_source_url' => 'https://catalogue.example.com/extensions', 'capell.disable_cache' => true]);
+    app()->instance(ResolvesHostAddresses::class, new class implements ResolvesHostAddresses
+    {
+        private int $lookups = 0;
+
+        public function resolve(string $host): array
+        {
+            // The source check sees a public answer; the connection sees metadata.
+            return ++$this->lookups === 1 ? ['93.184.216.34'] : ['169.254.169.254'];
+        }
+    });
+    Http::fake(['*' => Http::response(['packages' => [['name' => 'vendor/leaked']]])]);
+
+    expect(resolve(PluginPackagesFetcher::class)->fetch(force: true))->toHaveCount(0);
+
+    Http::assertNothingSent();
+});
+
+it('stops a catalogue response at the one megabyte limit through the guarded client', function (): void {
+    config(['capell.plugins_source_url' => 'https://93.184.216.34/extensions', 'capell.disable_cache' => true]);
+    Http::fake(['*' => Http::response(str_repeat('a', 1048577))]);
+
+    expect(resolve(PluginPackagesFetcher::class)->fetch(force: true))->toHaveCount(0);
+});
+
+it('pins every catalogue page to the vetted public address at the transport boundary', function (): void {
+    config(['capell.plugins_source_url' => 'https://catalogue.example.com/extensions', 'capell.disable_cache' => true]);
+    app()->instance(ResolvesHostAddresses::class, new readonly class implements ResolvesHostAddresses
+    {
+        #[Override]
+        public function resolve(string $host): array
+        {
+            return ['93.184.216.34'];
+        }
+    });
+    $pins = [];
+    Http::fake(function (Request $request, array $options) use (&$pins): PromiseInterface {
+        $pins[] = $options['curl'][CURLOPT_RESOLVE] ?? null;
+
+        return Http::response(['data' => [['composer_name' => 'vendor/package']], 'meta' => ['last_page' => 2]]);
+    });
+
+    expect(resolve(PluginPackagesFetcher::class)->fetch(force: true))->toHaveCount(2);
+    expect($pins)->toBe([
+        ['catalogue.example.com:443:93.184.216.34'],
+        ['catalogue.example.com:443:93.184.216.34'],
+    ]);
+    Http::assertSentCount(2);
+});

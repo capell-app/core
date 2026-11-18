@@ -11,11 +11,13 @@ use Illuminate\Database\Events\MigrationsEnded;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Schema;
 
 beforeEach(function (): void {
+    Cache::flush();
     $this->schemaDiagnostics = new SchemaDiagnosticRecorder;
     Event::listen(MessageLogged::class, $this->schemaDiagnostics->record(...));
 });
@@ -148,6 +150,9 @@ it('forgets table and column snapshots on explicit invalidation', function (stri
 })->with(['flush', 'table', 'column']);
 
 it('logs a failed table probe so it is distinguishable from genuine absence', function (): void {
+    // The listing answers, naming no table, so only the probe under test can log.
+    Schema::shouldReceive('getCurrentSchemaName')->andReturn('testing');
+    Schema::shouldReceive('getTableListing')->andReturn([]);
     Schema::shouldReceive('hasTable')
         ->with('capell_extensions')
         ->andThrow(new RuntimeException('database unavailable'));
@@ -177,6 +182,9 @@ it('logs a failed column probe so it is distinguishable from genuine absence', f
 });
 
 it('logs nothing when the schema is genuinely absent', function (): void {
+    // The listing answers, naming no table, so only the probe under test can log.
+    Schema::shouldReceive('getCurrentSchemaName')->andReturn('testing');
+    Schema::shouldReceive('getTableListing')->andReturn([]);
     Schema::shouldReceive('hasTable')
         ->with('capell_extensions')
         ->andReturnFalse();
@@ -225,6 +233,7 @@ it('answers every present table from one listing of the connection', function ()
     }
 
     $probe = static function (array $names): array {
+        Cache::flush();
         $state = new RuntimeSchemaState;
         $answers = [];
         $queries = runtimeSchemaQueries(function () use ($state, $names, &$answers): void {
@@ -283,8 +292,14 @@ it('probes each table itself when the listing cannot be read', function (): void
     $state = new RuntimeSchemaState;
 
     expect($state->tableResult('capell_extensions'))->toBe(SchemaProbeResult::Present)
-        ->and($state->tableResult('missing_runtime_table'))->toBe(SchemaProbeResult::Absent)
-        ->and($this->schemaDiagnostics->events())->toBe([]);
+        ->and($state->tableResult('missing_runtime_table'))->toBe(SchemaProbeResult::Absent);
+
+    $events = $this->schemaDiagnostics->events();
+
+    // The failed listing is reported once, with its cause, not swallowed and not once per table.
+    expect($events)->toHaveCount(1)
+        ->and($events[0]->message)->toBe('Capell runtime schema listing failed; probing each table on its own.')
+        ->and($events[0]->context)->toMatchArray(['exception' => RuntimeException::class, 'reason' => 'listing unavailable']);
 });
 
 it('forgets what it read once migrations have run in the same process', function (string $event): void {
@@ -297,3 +312,25 @@ it('forgets what it read once migrations have run in the same process', function
 
     expect($state->hasTable('runtime_migrated_later'))->toBeTrue();
 })->with(['migrations', 'schema change']);
+
+it('answers a later request from the shared listing without a schema query until migrations end', function (): void {
+    Cache::flush();
+    Schema::create('runtime_shared_listing', fn (Blueprint $blueprint) => $blueprint->id());
+
+    expect((new RuntimeSchemaState)->hasTable('runtime_shared_listing'))->toBeTrue();
+
+    $queries = 0;
+    DB::listen(function () use (&$queries): void {
+        $queries++;
+    });
+
+    $laterRequest = new RuntimeSchemaState;
+
+    expect($laterRequest->hasTable('runtime_shared_listing'))->toBeTrue()
+        ->and($queries)->toBe(0);
+
+    event(new MigrationsEnded('up'));
+    resolve(RuntimeSchemaState::class)->flush();
+
+    expect(Cache::get('capell:schema:tables:' . DB::connection()->getName() . ':' . DB::connection()->getDatabaseName() . ':' . DB::connection()->getTablePrefix()))->toBeNull();
+});

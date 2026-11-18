@@ -4,11 +4,17 @@ declare(strict_types=1);
 
 namespace Capell\Core\Support\Plugins;
 
+use Capell\Core\Contracts\Security\ResolvesHostAddresses;
 use Capell\Core\Enums\CacheEnum;
+use Capell\Core\Exceptions\OutboundRequestRefusedException;
 use Capell\Core\Facades\CapellCore;
 use Capell\Core\Support\Cache\CapellCacheManager;
+use Capell\Core\Support\Http\OutboundHttp;
+use Capell\Core\Support\Http\OutboundHttpPolicy;
 use Capell\Core\Support\Http\OutboundHttpRetry;
+use Capell\Core\Support\Http\PublicAddressPolicy;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -17,7 +23,7 @@ class PluginPackagesFetcher
 {
     private const int MAX_RESPONSE_BYTES = 1048576;
 
-    private const int CACHE_SCHEMA = 2;
+    private const int CACHE_SCHEMA = 3;
 
     /** @return Collection<int, array<string, mixed>> */
     public function fetchWithinBudget(float $seconds): Collection
@@ -94,8 +100,9 @@ class PluginPackagesFetcher
                 return $this->unavailable();
             }
 
-            $request = Http::acceptJson()->connectTimeout(min($remaining, $deadline === null ? 5 : 1))
-                ->timeout($remaining)->withOptions(['allow_redirects' => false]);
+            $request = $this->catalogueRequest($url)->acceptJson()
+                ->connectTimeout(min($remaining, $deadline === null ? 5 : 1))
+                ->timeout($remaining);
             if ($deadline === null) {
                 $request = OutboundHttpRetry::fromConfig('capell.plugins_http')->apply($request);
             }
@@ -103,6 +110,10 @@ class PluginPackagesFetcher
             try {
                 $response = $request->get($pageUrl);
             } catch (ConnectionException) {
+                return $this->unavailable();
+            } catch (OutboundRequestRefusedException $outboundRequestRefusedException) {
+                Log::warning('Plugin packages source refused', ['url' => $url, 'reason' => $outboundRequestRefusedException->reason]);
+
                 return $this->unavailable();
             }
 
@@ -200,6 +211,11 @@ class PluginPackagesFetcher
             'themeKey' => $manifest['theme']['key'] ?? $manifest['themeKey'] ?? null,
             'extendsPackage' => $manifest['theme']['extends'] ?? $manifest['extends'] ?? null,
             'visibility' => $manifest['visibility'] ?? 'catalogue',
+            'defaultSelected' => $manifest['defaultSelected'] ?? false,
+            'roles' => is_array($manifest['roles'] ?? null) ? $manifest['roles'] : [],
+            'rolePriority' => is_int($manifest['rolePriority'] ?? null) ? $manifest['rolePriority'] : null,
+            'installTips' => is_array($manifest['install']['tips'] ?? null) ? $manifest['install']['tips'] : [],
+            'legacyTables' => is_array($manifest['install']['legacyTables'] ?? null) ? $manifest['install']['legacyTables'] : [],
         ];
     }
 
@@ -232,38 +248,40 @@ class PluginPackagesFetcher
             return true;
         }
 
-        if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
-            $addresses = [$host];
-        } else {
-            $dnsRecords = dns_get_record($host, DNS_A + DNS_AAAA);
-            $addresses = $dnsRecords === false ? [] : $dnsRecords;
+        $addresses = filter_var($host, FILTER_VALIDATE_IP) !== false
+            ? [$host]
+            : resolve(ResolvesHostAddresses::class)->resolve($host);
+
+        return $addresses !== [] && resolve(PublicAddressPolicy::class)->allPublic($addresses);
+    }
+
+    /**
+     * The catalogue is fetched through the guarded client: the source host is
+     * resolved and pinned at connection time, so a DNS change after the
+     * isSafeSourceUrl() check cannot point the request at a private address,
+     * and the body stops at the response limit instead of being read first.
+     * Only the reserved .test hosts in the testing environment, which
+     * isSafeSourceUrl() already accepts without resolving, use the plain client.
+     */
+    private function catalogueRequest(string $url): PendingRequest
+    {
+        $host = parse_url($url, PHP_URL_HOST);
+
+        if (is_string($host) && $this->isTestingHost(strtolower(rtrim($host, '.')))) {
+            return Http::withoutRedirecting();
         }
 
-        if ($addresses === []) {
-            return false;
-        }
+        $port = parse_url($url, PHP_URL_PORT);
 
-        foreach ($addresses as $address) {
-            $ip = is_array($address) ? ($address['ip'] ?? $address['ipv6'] ?? null) : $address;
-            if (! is_string($ip) || ! $this->isPublicIp($ip)) {
-                return false;
-            }
-        }
-
-        return true;
+        return OutboundHttp::guarded(new OutboundHttpPolicy(
+            schemes: ['https'],
+            ports: [is_int($port) ? $port : 443],
+            maxBytes: self::MAX_RESPONSE_BYTES,
+        ));
     }
 
     private function isTestingHost(string $host): bool
     {
         return app()->environment('testing') && str_ends_with($host, '.test');
-    }
-
-    private function isPublicIp(string $ip): bool
-    {
-        return filter_var(
-            $ip,
-            FILTER_VALIDATE_IP,
-            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE,
-        ) !== false;
     }
 }

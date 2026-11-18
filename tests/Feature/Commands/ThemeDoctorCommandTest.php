@@ -2,11 +2,20 @@
 
 declare(strict_types=1);
 
+use Capell\Core\Actions\Diagnostics\BuildThemeDoctorReportAction;
+use Capell\Core\Data\Diagnostics\DoctorCheckResultData;
+use Capell\Core\Data\Diagnostics\DoctorReportData;
+use Capell\Core\Enums\Diagnostics\DoctorCheckSeverity;
+use Capell\Core\Enums\PackageRole;
 use Capell\Tests\Support\OwnedApplicationPaths;
+use Illuminate\Support\Facades\Artisan;
 use Symfony\Component\Console\Command\Command;
 
 beforeEach(function (): void {
     $this->workspace = new OwnedApplicationPaths(app());
+
+    // A scaffolded theme builds on whichever package declares the default-theme role.
+    registerRolePackage('vendor/starter-theme', PackageRole::DefaultTheme);
 });
 
 afterEach(function (): void {
@@ -75,4 +84,31 @@ it('fails when theme Blade uses root-relative asset urls', function (): void {
     ])
         ->expectsOutputToContain('Root-relative asset URLs found')
         ->assertExitCode(Command::FAILURE);
+});
+
+it('points at the command that lists theme warnings and exits zero', function (): void {
+    $report = DoctorReportData::fromChecks(collect([
+        new DoctorCheckResultData('Optional', false, 'Optional thing is missing.', 'Add it.', 'theme.optional', DoctorCheckSeverity::Warning),
+    ]));
+    app()->instance(BuildThemeDoctorReportAction::class, new readonly class($report)
+    {
+        public function __construct(private DoctorReportData $report) {}
+
+        public function handle(string $theme, ?string $path = null): DoctorReportData
+        {
+            return $this->report;
+        }
+    });
+
+    $exitCode = Artisan::call('capell:theme:doctor', ['theme' => 'demo']);
+    $output = Artisan::output();
+    Artisan::call('capell:theme:doctor', ['theme' => 'demo', '--path' => '/tmp/my theme']);
+    $withPath = Artisan::output();
+    $listed = Artisan::call('capell:theme:doctor', ['theme' => 'demo', '--warnings' => true]);
+
+    expect($exitCode)->toBe(Command::SUCCESS)
+        ->and($listed)->toBe(Command::SUCCESS)
+        ->and($output)->toContain('Theme checks passed with warnings')
+        ->toContain("php artisan capell:theme:doctor 'demo' --warnings")
+        ->and($withPath)->toContain("php artisan capell:theme:doctor 'demo' --path='/tmp/my theme' --warnings");
 });

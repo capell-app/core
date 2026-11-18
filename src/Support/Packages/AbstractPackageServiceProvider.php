@@ -24,6 +24,9 @@ use ReflectionMethod;
 use RuntimeException;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 
+/**
+ * @api
+ */
 abstract class AbstractPackageServiceProvider extends PackageServiceProvider implements PackageServiceProvidable
 {
     use RegistersInstalledRuntime;
@@ -273,7 +276,7 @@ abstract class AbstractPackageServiceProvider extends PackageServiceProvider imp
             return;
         }
 
-        $role = $this->app->make(RuntimeRoleResolver::class)->role();
+        $role = RuntimeRoleResolver::boundTo($this->app)->role();
         foreach ($manifest->providers->toArray() as $bucket => $providers) {
             if (! $role->loadsAuthoringProviders() && in_array($bucket, ['install', 'admin'], true)) {
                 continue;

@@ -31,10 +31,13 @@ use Capell\Core\Enums\ExtensionManifestVersion;
 use Capell\Core\Enums\ExtensionSurface;
 use Capell\Core\Support\Agent\AgentToolDefinitionNormalizer;
 use Capell\Core\Support\Manifest\Exceptions\InvalidManifestException;
+use Capell\Core\Support\Manifest\Validation\CapabilityContractsSectionValidator;
 use Capell\Core\Support\Manifest\Validation\CommercialSectionValidator;
 use Capell\Core\Support\Manifest\Validation\ManifestValidationRules;
 use Capell\Core\Support\Manifest\Validation\MarketplaceSectionValidator;
 use Capell\Core\Support\Manifest\Validation\PerformanceSectionValidator;
+use Capell\Core\Support\Manifest\Validation\PrivacySectionValidator;
+use Capell\Core\Support\Manifest\Validation\RolesAndInstallSectionValidator;
 use Capell\Core\Support\Manifest\Validation\SecuritySectionValidator;
 use Capell\Core\Support\Packages\TrustedCorePackages;
 use Illuminate\Support\ServiceProvider;
@@ -65,6 +68,7 @@ final class ManifestValidator
 
     /** @var list<string> */
     private const array VALID_ROOT_FIELDS = [
+        ManifestVocabulary::SCHEMA_KEY,
         'manifest-version',
         'name',
         'slug',
@@ -86,6 +90,8 @@ final class ManifestValidator
         'settings',
         'permissions',
         'capabilities',
+        'capabilityContracts',
+        'privacy',
         'security',
         'performance',
         'healthChecks',
@@ -96,6 +102,9 @@ final class ManifestValidator
         'themeKey',
         'runtime',
         'defaultSelected',
+        'roles',
+        'rolePriority',
+        'install',
         'demo',
         'order',
         'installPath',
@@ -109,17 +118,25 @@ final class ManifestValidator
 
     private readonly ManifestValidationRules $rules;
 
-    /** @var list<ManifestSectionValidator> */
-    private readonly array $sectionValidators;
+    /** @var list<ManifestSectionValidator> Run before the health check declarations are judged. */
+    private readonly array $sectionValidatorsBeforeHealthChecks;
+
+    /** @var list<ManifestSectionValidator> Run after the health check declarations are judged. */
+    private readonly array $sectionValidatorsAfterHealthChecks;
 
     public function __construct()
     {
         $this->rules = new ManifestValidationRules;
-        $this->sectionValidators = [
+        $this->sectionValidatorsBeforeHealthChecks = [
             new SecuritySectionValidator($this->rules),
             new PerformanceSectionValidator($this->rules),
+        ];
+        $this->sectionValidatorsAfterHealthChecks = [
             new CommercialSectionValidator,
             new MarketplaceSectionValidator($this->rules),
+            new CapabilityContractsSectionValidator,
+            new PrivacySectionValidator,
+            new RolesAndInstallSectionValidator,
         ];
     }
 
@@ -234,11 +251,16 @@ final class ManifestValidator
         $this->validateClassList($data['providers'], $namespacePrefixes, $isTrustedCore, ServiceProvider::class);
         $this->validateContributions($data, $namespacePrefixes, $isTrustedCore);
         $this->validateContributionTraceability($data);
-        $this->sectionValidators[0]->validate($data);
-        $this->sectionValidators[1]->validate($data);
+
+        foreach ($this->sectionValidatorsBeforeHealthChecks as $sectionValidator) {
+            $sectionValidator->validate($data);
+        }
+
         $this->validateHealthChecks($data, $namespacePrefixes, $isTrustedCore);
-        $this->sectionValidators[2]->validate($data);
-        $this->sectionValidators[3]->validate($data);
+
+        foreach ($this->sectionValidatorsAfterHealthChecks as $sectionValidator) {
+            $sectionValidator->validate($data);
+        }
     }
 
     /**
@@ -253,6 +275,10 @@ final class ManifestValidator
         }
 
         $this->rules->requiredStrings($data['product'], ['group', 'tier']);
+
+        if (! in_array($data['product']['tier'], ManifestVocabulary::PRODUCT_TIERS, strict: true)) {
+            throw InvalidManifestException::invalidField('product.tier', 'must be one of: ' . implode(', ', ManifestVocabulary::PRODUCT_TIERS));
+        }
     }
 
     /** @param array<string, mixed> $data */

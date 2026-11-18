@@ -16,6 +16,8 @@ final readonly class PackageScaffoldInputData
         public string $tier,
         public string $targetPath,
         public PackageScaffoldProfile $profile,
+        /** The package that declares the scaffold-full-profile role; the full profile builds on it. */
+        public ?string $profilePackage = null,
     ) {}
 
     /**
@@ -30,6 +32,7 @@ final readonly class PackageScaffoldInputData
             '{{ jsonDisplayName }}' => $this->jsonStringValue($this->displayName),
             '{{ phpDisplayName }}' => $this->phpStringValue($this->displayName),
             '{{ tier }}' => $this->tier,
+            '{{ proposedLicense }}' => $this->tier === 'premium' ? 'paid' : 'free',
             '{{ namespace }}' => $this->namespace,
             '{{ escapedNamespace }}' => str_replace('\\', '\\\\', $this->namespace),
             '{{ escapedRuntimeProvider }}' => str_replace('\\', '\\\\', $this->namespace . '\\Providers\\PackageServiceProvider'),
@@ -40,6 +43,7 @@ final readonly class PackageScaffoldInputData
             '{{ packageClass }}' => class_basename($this->namespace),
             '{{ settingsGroup }}' => str_replace('-', '_', $this->slug),
             '{{ widgetKey }}' => str_replace('/', '.', $this->packageName),
+            '{{ profilePackage }}' => $this->profilePackage ?? '',
         ];
     }
 

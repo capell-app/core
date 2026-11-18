@@ -6,8 +6,11 @@ namespace Capell\Core\Data;
 
 use BackedEnum;
 use Capell\Core\Data\Manifest\ExtensionContributionData;
+use Capell\Core\Data\Manifest\ExtensionInstallTipData;
+use Capell\Core\Data\Manifest\ExtensionLegacyTableData;
 use Capell\Core\Data\Manifest\ExtensionPerformanceBudgetData;
 use Capell\Core\Data\Manifest\ExtensionProviderData;
+use Capell\Core\Enums\PackageRole;
 use Capell\Core\Enums\PackageScopeEnum;
 use Capell\Core\Enums\PackageTypeEnum;
 use Capell\Core\Facades\CapellCore;
@@ -100,6 +103,25 @@ class PackageData extends Data
         /** @var array<string, mixed>|null */
         public ?array $installEligibility = null,
         public ?string $purchaseUrl = null,
+        /**
+         * Roles a Marketplace catalogue entry declares, for a package that has no manifest in this install yet.
+         *
+         * @var list<PackageRole>
+         */
+        public array $declaredRoles = [],
+        public ?int $declaredRolePriority = null,
+        /**
+         * Post-install hints a catalogue entry declares, for a package that has no manifest in this install yet.
+         *
+         * @var list<ExtensionInstallTipData>
+         */
+        public array $declaredInstallTips = [],
+        /**
+         * Tables a catalogue entry says it took over, for a package that has no manifest in this install yet.
+         *
+         * @var list<ExtensionLegacyTableData>
+         */
+        public array $declaredLegacyTables = [],
     ) {
         if ($this->key === null) {
             $this->key = strtolower((string) $this->shortName);
@@ -336,6 +358,47 @@ class PackageData extends Data
     public function isHiddenFromMarketplace(): bool
     {
         return $this->hiddenFromMarketplace || $this->manifest?->marketplaceHidden === true;
+    }
+
+    /**
+     * The roles this package declares: its installed manifest when it has one, otherwise what its
+     * Marketplace catalogue entry declares.
+     *
+     * @return list<PackageRole>
+     */
+    public function roles(): array
+    {
+        return $this->manifest instanceof CapellManifestData
+            ? $this->manifest->roles
+            : $this->declaredRoles;
+    }
+
+    public function hasRole(PackageRole $role): bool
+    {
+        return in_array($role, $this->roles(), true);
+    }
+
+    public function rolePriority(): int
+    {
+        return $this->manifest instanceof CapellManifestData
+            ? $this->manifest->rolePriority
+            : ($this->declaredRolePriority ?? 0);
+    }
+
+    /** @return list<ExtensionInstallTipData> */
+    public function installTips(): array
+    {
+        return $this->manifest instanceof CapellManifestData
+            ? $this->manifest->installTips
+            : $this->declaredInstallTips;
+    }
+
+    /** @return list<ExtensionLegacyTableData> */
+    public function legacyTables(): array
+    {
+        return $this->manifest instanceof CapellManifestData
+            ? $this->manifest->legacyTables
+            : $this->declaredLegacyTables;
     }
 
     public function isDemo(): bool

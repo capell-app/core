@@ -48,5 +48,21 @@ final class InstallInputData extends Data
         public readonly ?string $selectedThemeKey = null,
         public readonly bool $seedDatabase = false,
         public readonly bool $initialInstallation = false,
+        public readonly ?string $siteName = null,
+        public readonly ?string $presetKey = null,
+        public readonly bool $publish = false,
+        public readonly ?string $suiteKey = null,
+        /**
+         * The package that declares the developer-tooling role. It is resolved when the input is
+         * built, while the Marketplace catalogue is cached, because the install steps clear that cache.
+         */
+        public readonly ?string $developerToolingPackage = null,
+        /**
+         * Tables the planned packages declare in `install.legacyTables`, captured with the plan for
+         * the same reason as the tooling package.
+         *
+         * @var list<array{name: string, configKey: string, migration: string}>
+         */
+        public readonly array $legacyTables = [],
     ) {}
 }
