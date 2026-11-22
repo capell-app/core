@@ -20,6 +20,9 @@ final readonly class HostMonitorStore
 
     private const int RETENTION_SECONDS = 86400;
 
+    /** Long enough to outlast a task that runs once a year, so even a rarely run task is released. */
+    private const int DEFERRAL_SECONDS = 400 * 86400;
+
     public function __construct(private Repository $cache) {}
 
     public function node(): string
@@ -158,6 +161,95 @@ final readonly class HostMonitorStore
     public function putSchedulerRun(string $node, string $minute, array $run): void
     {
         $this->put('scheduler:' . $node . ':' . $minute, $run, 3600);
+    }
+
+    /** Unix time the named task was first deferred in the current busy spell, or null. */
+    public function deferredSince(string $task): ?int
+    {
+        $since = $this->get('deferred:' . $this->taskKey($task));
+
+        // A shared cache such as Redis returns numbers as strings.
+        return is_int($since) || (is_string($since) && ctype_digit($since)) ? (int) $since : null;
+    }
+
+    public function markDeferred(string $task, int $at): void
+    {
+        $this->put('deferred:' . $this->taskKey($task), $at, self::DEFERRAL_SECONDS);
+    }
+
+    public function clearDeferred(string $task): void
+    {
+        try {
+            $this->cache->forget(self::PREFIX . 'deferred:' . $this->taskKey($task));
+        } catch (Throwable) {
+            // Monitoring must never break the work it observes.
+        }
+    }
+
+    /**
+     * Unix time a listed task first skipped a run in the current busy spell and has not yet run since, or null.
+     * A task that runs on one server only keeps one shared record, so every node sees the same state.
+     */
+    public function catchUpPendingSince(string $task, bool $shared = false): ?int
+    {
+        $since = $this->get('catchup-pending:' . $this->taskKey($task, $shared));
+
+        return is_int($since) || (is_string($since) && ctype_digit($since)) ? (int) $since : null;
+    }
+
+    public function markCatchUpPending(string $task, int $at, bool $shared = false): void
+    {
+        $this->put('catchup-pending:' . $this->taskKey($task, $shared), $at, self::DEFERRAL_SECONDS);
+    }
+
+    public function clearCatchUpPending(string $task, bool $shared = false): void
+    {
+        try {
+            $this->cache->forget(self::PREFIX . 'catchup-pending:' . $this->taskKey($task, $shared));
+        } catch (Throwable) {
+            // Monitoring must never break the work it observes.
+        }
+    }
+
+    /** Unix time a listed task last finished, recorded like the pending marker: shared for onOneServer tasks. */
+    public function lastRunAt(string $task, bool $shared = false): ?int
+    {
+        $at = $this->get('last-run:' . $this->taskKey($task, $shared));
+
+        return is_int($at) || (is_string($at) && ctype_digit($at)) ? (int) $at : null;
+    }
+
+    public function markRan(string $task, int $at, bool $shared = false): void
+    {
+        $this->put('last-run:' . $this->taskKey($task, $shared), $at, self::DEFERRAL_SECONDS);
+    }
+
+    /**
+     * Claims the one catch-up a task may have on a date. Atomic on stores that support add(), so two nodes
+     * sharing a cache cannot both win. False when it was already claimed or the store failed.
+     */
+    public function claimCatchUp(string $task, string $date, bool $shared = false): bool
+    {
+        try {
+            return $this->cache->add(self::PREFIX . 'catchup-done:' . $this->taskKey($task, $shared) . ':' . $date, 1, 2 * 86400);
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /** Gives the claim back when the catch-up did not actually run, so it can be tried again. */
+    public function releaseCatchUp(string $task, string $date, bool $shared = false): void
+    {
+        try {
+            $this->cache->forget(self::PREFIX . 'catchup-done:' . $this->taskKey($task, $shared) . ':' . $date);
+        } catch (Throwable) {
+            // Monitoring must never break the work it observes.
+        }
+    }
+
+    private function taskKey(string $task, bool $shared = false): string
+    {
+        return hash('xxh128', ($shared ? '' : $this->node()) . '|' . $task);
     }
 
     /** @return list<array<string, mixed>> */

@@ -41,6 +41,7 @@ use Capell\Core\Models\Concerns\ExtensibleModel;
 use Capell\Core\Models\ExtensionQuarantine;
 use Capell\Core\Support\Assets\VendorAssetConditionRegistry;
 use Capell\Core\Support\BlueprintSubjectRegistry;
+use Capell\Core\Support\Cache\CacheDependencyRegistry;
 use Capell\Core\Support\Cache\CapellCacheManager;
 use Capell\Core\Support\Capabilities\CapabilityRegistry;
 use Capell\Core\Support\CapellCoreManager;
@@ -57,6 +58,7 @@ use Capell\Core\Support\Makers\MakerRegistry;
 use Capell\Core\Support\Manifest\ManifestLoader;
 use Capell\Core\Support\Marketplace\CommercialCatalogueStore;
 use Capell\Core\Support\Marketplace\ExtensionCommercialPolicy;
+use Capell\Core\Support\Marketplace\SignedPackageLicenceManifest;
 use Capell\Core\Support\Media\MediaCompositionGuidanceRegistry;
 use Capell\Core\Support\Metrics\MetricCollectorRegistry;
 use Capell\Core\Support\Metrics\MetricEventRegistry;
@@ -73,6 +75,7 @@ use Capell\Core\Support\Privacy\PrivacySubjectRegistry;
 use Capell\Core\Support\PublicRead\PublicPageReadEligibilityRegistry;
 use Capell\Core\Support\PublicRead\PublicReadWithdrawalSteps;
 use Capell\Core\Support\Publishing\PublicationReadinessRegistry;
+use Capell\Core\Support\Publishing\ScheduledPublicationRegistry;
 use Capell\Core\Support\Renderables\RenderableRegistry;
 use Capell\Core\Support\Reporting\SignalDispatchGuard;
 use Capell\Core\Support\Runtime\RuntimeRolePackageManifest;
@@ -83,6 +86,7 @@ use Capell\Core\Support\Security\SiteOwnedHosts;
 use Capell\Core\Support\Settings\SettingsSchemaRegistry;
 use Capell\Core\Support\SiteAccess\SiteAccessPolicyRegistry;
 use Capell\Core\Support\Subscriber\SubscriberRegistry;
+use Capell\Core\Support\TableName;
 use Capell\Core\Support\Themes\LayoutViewRegistry;
 use Capell\Core\Support\Themes\ThemeChromeRegistry;
 use Capell\Core\Support\Themes\ThemeInstallDefaultsRegistry;
@@ -115,7 +119,6 @@ use Capell\Frontend\Support\Routing\FrontendRouteMiddlewareRegistry;
 use Capell\Frontend\Support\Routing\ReservedFrontendDomainRegistry;
 use Capell\Frontend\Support\Routing\ReservedFrontendPathRegistry;
 use Capell\Frontend\Support\Routing\ReservedFrontendRequest;
-use Capell\Frontend\Support\Rules\FrontendRuleConditionRegistry;
 use Capell\Frontend\Support\State\FrontendState;
 use Capell\Frontend\Support\Static\StaticPageArtifactStore;
 use Capell\Frontend\Support\View\ThemeChainResolver;
@@ -182,8 +185,9 @@ final class SingletonLifetimeInventory
             CapellCoreManager::class => self::tagged('Boot registrations persist while the manager selectively flushes only operation-derived default-page state.'),
             ComponentRegistry::class => self::tagged('Boot component registrations and namespaces persist while discovered components and the cache-presence memo are selectively flushed.'),
             CommercialCatalogueStore::class => self::delegated('The package registry runtime flush clears the memoised catalogue so a catalogue stored by another worker is re-read and re-verified.'),
-            ExtensionCommercialPolicy::class => self::delegated('Holds only the catalogue store, which the package registry runtime flush clears.'),
-            CapellCacheManager::class => self::delegated('The core manager flushes this per-operation in-memory cache.'),
+            SignedPackageLicenceManifest::class => self::delegated('The package registry runtime flush clears the memoised package licence classifications.'),
+            ExtensionCommercialPolicy::class => self::delegated('The package registry runtime flush clears the catalogue, package licences and installed code identity.'),
+            CapellCacheManager::class => self::delegated('The core manager flushes this per-operation in-memory cache and the namespace generation read with it, after each Octane operation and before each queued job.'),
             LockdownStore::class => self::tagged('Lockdown decisions are operation-derived and explicitly flushed.'),
             ExtensionQuarantineGate::class => self::tagged('The quarantined set is read once per boot cycle, forgotten on every quarantine write and flushed between operations.'),
             RollbackValidatorRegistry::class => self::boot('Rollback validators are package boot registrations.'),
@@ -196,6 +200,8 @@ final class SingletonLifetimeInventory
             OutboundEventRegistry::class => self::boot('Outbound event definitions are package boot registrations, frozen on booted.'),
             HtmlSanitizerProfileRegistry::class => self::boot('Packages extend HTML sanitiser profiles at boot; resolved policies are derived from those registrations only.'),
             CapabilityRegistry::class => self::boot('Optional packages provide capability contracts at boot; consumers resolve a fresh provider per call.'),
+            CacheDependencyRegistry::class => self::boot('Packages declare model cache dependencies at boot; Frontend reads them when a model changes.'),
+            ScheduledPublicationRegistry::class => self::boot('Packages register scheduled-publication model classes at boot, frozen on booted and re-opened only during package installation.'),
             SecurityWeaknessRegistry::class => self::boot('Security weakness checks and remediations are package boot registrations, frozen on booted and re-opened only during package installation.'),
             BlueprintSubjectRegistry::class => self::boot('Blueprint subjects are package boot registrations, frozen on booted.'),
             MetricsManager::class => self::stateless('The manager delegates to the boot metric registry and event storage action.'),
@@ -236,7 +242,6 @@ final class SingletonLifetimeInventory
             RenderableDynamicDataRegistry::class => self::boot('Dynamic data resolvers are package boot registrations.'),
             RenderHookRegistry::class => self::boot('Render hooks are package boot registrations.'),
             HeadMetadataRegistry::class => self::boot('Default head metadata contributions are package boot registrations.'),
-            FrontendRuleConditionRegistry::class => self::boot('Rule conditions are package boot registrations.'),
             ReservedFrontendPathRegistry::class => self::boot('Reserved paths are package boot registrations.'),
             ReservedFrontendDomainRegistry::class => self::boot('Reserved domains are package boot registrations.'),
             ThemeViewRegistrar::class => self::tagged('View finder namespace hints are restored after every operation.'),
@@ -270,12 +275,13 @@ final class SingletonLifetimeInventory
     public static function mutableStaticState(): array
     {
         return [
-            SiteOwnedHosts::class => 'Site-domain answers live in a WeakMap keyed by the request object, so they are dropped with each request and never answer for the next one.',
+            SiteOwnedHosts::class => 'Site-domain answers live in a WeakMap keyed by the request object and are dropped by the tagged per-operation reset, which also runs before every queued job because a worker keeps one request object for all of them.',
             SignalDispatchGuard::class => 'Weak application and fibre keys isolate in-flight reporting; finally releases completed dispatches without retaining request containers.',
             HasModelRelations::class => 'This trait provides a deliberate boot registry shared by every operation.',
             PublicRenderDataScope::class => 'Render-local data set only inside during(), which restores the previous value in finally, so nothing outlives a public render or crosses requests.',
             StaticPageArtifactStore::class => 'Ownership lock files this process holds, set only while their flock is held and removed in finally, so a nested write re-enters its own lock and nothing outlives the write.',
             LivewireRouteComponentClass::class => 'Caches the class name of a compiled Livewire route component by its source path, so a process stops redeclaring the same anonymous class. An entry is reused only while the class is still declared and the source and compiled file modification times are unchanged; the name depends on that file alone, never on a request, tenant or user, so it carries no operation data and a changed file is recompiled.',
+            TableName::class => 'Holds the config repository of the current container only, behind a weak reference; a different container, or a rebind of config on that container, replaces it before the next read, and every value is still read live from it, so nothing from one request answers for another.',
             ExtensionQuarantine::class => 'The missing-table flag only suppresses repeated warnings for the process lifetime and carries no operation data.',
             ExtensibleModel::class => 'Extension fillable and cast declarations are deliberate model boot registries.',
             ManifestLoader::class => 'Registered manifest autoload paths are process boot metadata and prevent duplicate Composer loaders.',

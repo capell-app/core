@@ -12,6 +12,7 @@ use Capell\Core\Contracts\Extensions\ExtensionContribution;
 use Capell\Core\Contracts\Extensions\RegistersExtensionAdminResource;
 use Capell\Core\Contracts\Extensions\RegistersExtensionAsset;
 use Capell\Core\Contracts\Extensions\RegistersExtensionBlueprintSubject;
+use Capell\Core\Contracts\Extensions\RegistersExtensionBuilderBlock;
 use Capell\Core\Contracts\Extensions\RegistersExtensionContentWidget;
 use Capell\Core\Contracts\Extensions\RegistersExtensionFilamentWidget;
 use Capell\Core\Contracts\Extensions\RegistersExtensionFrontendComponent;
@@ -46,28 +47,7 @@ use InvalidArgumentException;
 final class ManifestValidator
 {
     /** @var list<string> */
-    private const array VALID_KINDS = ['package', 'plugin', 'theme', 'integration', 'bundle'];
-
-    /** @var list<string> */
-    private const array VALID_VISIBILITIES = ['catalogue', 'support'];
-
-    /** @var list<string> */
-    private const array REQUIRED_PROVIDER_BUCKETS = ['metadata', 'install', 'runtime', 'admin', 'frontend'];
-
-    /** @var list<string> */
-    private const array VALID_PROVIDER_BUCKETS = ['metadata', 'install', 'runtime', 'auth', 'admin', 'frontend'];
-
-    /** @var list<string> */
-    private const array TRUSTED_PLATFORM_NAMESPACE_PREFIXES = [
-        'Capell\\Admin\\',
-        'Capell\\Core\\',
-        'Capell\\Frontend\\',
-        'Capell\\Installer\\',
-        'Capell\\Marketplace\\',
-    ];
-
-    /** @var list<string> */
-    private const array VALID_ROOT_FIELDS = [
+    public const array VALID_ROOT_FIELDS = [
         ManifestVocabulary::SCHEMA_KEY,
         'manifest-version',
         'name',
@@ -112,6 +92,27 @@ final class ManifestValidator
         'documentationUrl',
         'agent_tools',
         'agent_tools_reason',
+    ];
+
+    /** @var list<string> */
+    private const array VALID_KINDS = ['package', 'plugin', 'theme', 'integration', 'bundle'];
+
+    /** @var list<string> */
+    private const array VALID_VISIBILITIES = ['catalogue', 'support'];
+
+    /** @var list<string> */
+    private const array REQUIRED_PROVIDER_BUCKETS = ['metadata', 'install', 'runtime', 'admin', 'frontend'];
+
+    /** @var list<string> */
+    private const array VALID_PROVIDER_BUCKETS = ['metadata', 'install', 'runtime', 'auth', 'admin', 'frontend'];
+
+    /** @var list<string> */
+    private const array TRUSTED_PLATFORM_NAMESPACE_PREFIXES = [
+        'Capell\\Admin\\',
+        'Capell\\Core\\',
+        'Capell\\Frontend\\',
+        'Capell\\Installer\\',
+        'Capell\\Marketplace\\',
     ];
 
     private bool $loadClasses = true;
@@ -682,6 +683,7 @@ final class ManifestValidator
             ExtensionContributionType::WorkflowAttention => ContributesWorkflowAttention::class,
             ExtensionContributionType::OutboundEvent => RegistersExtensionOutboundEvent::class,
             ExtensionContributionType::BlueprintSubject => RegistersExtensionBlueprintSubject::class,
+            ExtensionContributionType::BuilderBlock => RegistersExtensionBuilderBlock::class,
             default => ExtensionContribution::class,
         };
     }

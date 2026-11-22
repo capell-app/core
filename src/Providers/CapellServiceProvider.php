@@ -8,7 +8,11 @@ use BackedEnum;
 use Capell\Core\Actions\BladeComponentFacadeResolver;
 use Capell\Core\Actions\ConfigureMailMarkdownComponentsAction;
 use Capell\Core\Actions\ConfigureMailMarkdownLogoAction;
+use Capell\Core\Actions\HostMonitor\ApplyDeferrableTasksAction;
+use Capell\Core\Actions\HostMonitor\CatchUpDeferredTasksAction;
+use Capell\Core\Actions\HostMonitor\PruneHostLoadRollupsAction;
 use Capell\Core\Actions\HostMonitor\RecordHostSampleAction;
+use Capell\Core\Actions\HostMonitor\RollUpHostLoadAction;
 use Capell\Core\Actions\RegisterModelMorphMapAction;
 use Capell\Core\Actions\ResolvePublicPageableMorphTypesAction;
 use Capell\Core\Actions\Translations\HydratePageLanguagesAction;
@@ -23,6 +27,7 @@ use Capell\Core\Console\Commands\CoreFakerCommand;
 use Capell\Core\Console\Commands\CreateBackupCommand;
 use Capell\Core\Console\Commands\DeleteMigrationsCommand;
 use Capell\Core\Console\Commands\DoctorCommand;
+use Capell\Core\Console\Commands\ExportSiteSpecCommand;
 use Capell\Core\Console\Commands\ExtensionAuditCommand;
 use Capell\Core\Console\Commands\ExtensionPlaygroundCommand;
 use Capell\Core\Console\Commands\FakerCommand;
@@ -75,7 +80,9 @@ use Capell\Core\Contracts\Capabilities\LayoutWidgetHost;
 use Capell\Core\Contracts\Database\DatabasePlatform;
 use Capell\Core\Contracts\Extensions\BootsExtensionContributionReceiptContext;
 use Capell\Core\Contracts\Extensions\RecordsExtensionContributionReceipt;
+use Capell\Core\Contracts\Health\HostBusyGate;
 use Capell\Core\Contracts\Health\HostMetricsSource;
+use Capell\Core\Contracts\Health\ServerSettingsReader;
 use Capell\Core\Contracts\Makers\MakerRegistryInterface;
 use Capell\Core\Contracts\Marketplace\ExtensionEntitlements;
 use Capell\Core\Contracts\Media\MediaUploadConfigurationFactory;
@@ -160,11 +167,14 @@ use Capell\Core\Support\BlueprintSubjectRegistry;
 use Capell\Core\Support\Bootstrap\EventSourcingBootstrapper;
 use Capell\Core\Support\Bootstrap\PackageRegistryBootstrapper;
 use Capell\Core\Support\Bootstrap\SettingsBootstrapper;
+use Capell\Core\Support\Cache\CacheDependencyRegistry;
 use Capell\Core\Support\Cache\CapellCacheManager;
+use Capell\Core\Support\Cache\PublicReadRequestMemo;
 use Capell\Core\Support\Cache\ResilientDataStructureCache;
 use Capell\Core\Support\Capabilities\CapabilityRegistry;
 use Capell\Core\Support\CapellCoreManager;
 use Capell\Core\Support\Components\ComponentRegistry;
+use Capell\Core\Support\Config\LegacyConfigFallback;
 use Capell\Core\Support\ContentGraph\ContentGraphRegistry;
 use Capell\Core\Support\ContentGraph\Extractors\LayoutContentGraphExtractor;
 use Capell\Core\Support\ContentGraph\Extractors\MediaContentGraphExtractor;
@@ -187,9 +197,12 @@ use Capell\Core\Support\Extensions\ExtensionOrderingAudit;
 use Capell\Core\Support\FirstRun\GuidedSetupStateMemo;
 use Capell\Core\Support\Health\DiskCapacityHealthCheck;
 use Capell\Core\Support\Health\HealthCheckRegistry;
+use Capell\Core\Support\HostMonitor\DeferrableTaskPolicy;
+use Capell\Core\Support\HostMonitor\HostLoadGate;
 use Capell\Core\Support\HostMonitor\LocalHostMetricsSource;
+use Capell\Core\Support\HostMonitor\LocalServerSettingsReader;
 use Capell\Core\Support\HostMonitor\SchedulerRunRecorder;
-use Capell\Core\Support\Http\DnsHostAddressResolver;
+use Capell\Core\Support\Http\ProcessHostAddressResolver;
 use Capell\Core\Support\Install\InstallPatchRegistry;
 use Capell\Core\Support\Install\InstallProfileRepository;
 use Capell\Core\Support\Install\UnavailableAdminPanelUrlResolver;
@@ -208,6 +221,7 @@ use Capell\Core\Support\Makers\MakerSafety;
 use Capell\Core\Support\Marketplace\CommercialCatalogueStore;
 use Capell\Core\Support\Marketplace\ExtensionCommercialPolicy;
 use Capell\Core\Support\Marketplace\NullExtensionEntitlements;
+use Capell\Core\Support\Marketplace\SignedPackageLicenceManifest;
 use Capell\Core\Support\Media\BackendResolver;
 use Capell\Core\Support\Media\ImageUrlPolicy;
 use Capell\Core\Support\Media\MediaCompositionGuidanceRegistry;
@@ -247,12 +261,14 @@ use Capell\Core\Support\PublicRead\PublicReadResponseStamps;
 use Capell\Core\Support\PublicRead\PublicReadWithdrawalSteps;
 use Capell\Core\Support\Publishing\GatePublicationTransitionAuthorizer;
 use Capell\Core\Support\Publishing\PublicationReadinessRegistry;
+use Capell\Core\Support\Publishing\ScheduledPublicationRegistry;
 use Capell\Core\Support\Redirects\PageUrlRedirectHitRecorder;
 use Capell\Core\Support\Redirects\PageUrlRedirectResolver;
 use Capell\Core\Support\Renderables\RenderableRegistry;
 use Capell\Core\Support\Runtime\RuntimeRoleCachePaths;
 use Capell\Core\Support\Runtime\RuntimeRoleProviderPolicy;
 use Capell\Core\Support\Runtime\RuntimeRoleResolver;
+use Capell\Core\Support\Scheduling\RunScheduledCommandInProcess;
 use Capell\Core\Support\Security\Checks\AutoUpdatesOffForAdvisoryCheck;
 use Capell\Core\Support\Security\Checks\DebugEnabledCheck;
 use Capell\Core\Support\Security\Checks\InsecureCookieCheck;
@@ -269,9 +285,11 @@ use Capell\Core\Support\Security\Remediations\AutoUpdatesForAdvisoryRemediation;
 use Capell\Core\Support\Security\Remediations\DebugEnabledRemediation;
 use Capell\Core\Support\Security\Remediations\InsecureCookieRemediation;
 use Capell\Core\Support\Security\SecurityWeaknessRegistry;
+use Capell\Core\Support\Security\SiteOwnedHosts;
 use Capell\Core\Support\Settings\SettingsSchemaRegistry;
 use Capell\Core\Support\SiteAccess\SiteAccessPolicyRegistry;
 use Capell\Core\Support\SiteSpec\SiteSpecApplierRegistry;
+use Capell\Core\Support\SiteSpec\SiteSpecExporterRegistry;
 use Capell\Core\Support\SiteSpec\SiteSpecPresetRegistry;
 use Capell\Core\Support\Subscriber\SubscriberManager;
 use Capell\Core\Support\Subscriber\SubscriberRegistry;
@@ -294,10 +312,12 @@ use Capell\Core\ThemeStudio\Theme\ThemeRegistry;
 use Capell\Core\ThemeStudio\Theme\WidgetPresentationRegistry;
 use Composer\InstalledVersions;
 use Illuminate\Console\Events\CommandFinished;
+use Illuminate\Console\Events\CommandStarting;
 use Illuminate\Console\Events\ScheduledTaskFailed;
 use Illuminate\Console\Events\ScheduledTaskFinished;
 use Illuminate\Console\Events\ScheduledTaskStarting;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
@@ -309,11 +329,15 @@ use Illuminate\Database\Events\MigrationsEnded;
 use Illuminate\Database\Schema\Blueprint as SchemaBlueprint;
 use Illuminate\Foundation\Exceptions\Handler;
 use Illuminate\Foundation\Http\Kernel as HttpKernel;
+use Illuminate\Queue\Events\JobProcessing;
+use Illuminate\Queue\Jobs\SyncJob;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\View;
 use Illuminate\Support\Str;
 use Laravel\Octane\Contracts\OperationTerminated;
+use Laravel\Octane\Events\WorkerStarting;
 use Override;
 use Spatie\LaravelData\Support\Caching\DataStructureCache;
 use Spatie\LaravelPackageTools\Package;
@@ -349,23 +373,39 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         $this->registerSettingsSchemaRegistry();
         $this->bindManagers();
         $this->app->scoped(RuntimeSchemaState::class);
+        $this->app->scoped(PublicReadRequestMemo::class);
+        // A write anywhere may change a memoised page lookup; forget them all.
+        Event::listen(['eloquent.saved: *', 'eloquent.deleted: *', 'eloquent.restored: *'], static function (): void {
+            if (app()->resolved(PublicReadRequestMemo::class)) {
+                resolve(PublicReadRequestMemo::class)->flush();
+            }
+        });
         // A schema read before migrations ran in this process describes the old
         // schema; forget it, as the installer forgets its own table state.
         Event::listen([DatabaseSchemaChanged::class, MigrationsEnded::class], static function (): void {
             if (app()->resolved(RuntimeSchemaState::class)) {
                 resolve(RuntimeSchemaState::class)->flush();
             }
+
+            // The cache manager probes a cache table on its own connection itself.
+            if (app()->resolved(CapellCacheManager::class)) {
+                resolve(CapellCacheManager::class)->flushLocalCache();
+            }
         });
         $this->app->scoped(ProjectBuildArtifactHandlerRegistry::class);
         $this->app->scoped(ProjectBuildManifestMigrationRegistry::class);
         $this->app->tag([SiteSpecProjectBuildArtifactHandler::class], ProjectBuildArtifactHandler::TAG);
         $this->app->scoped(SiteSpecApplierRegistry::class);
+        $this->app->scoped(SiteSpecExporterRegistry::class);
         $this->app->scoped(GuidedSetupStateMemo::class);
         $this->app->scoped(SiteSpecPresetRegistry::class);
         $this->app->scoped(PageUrlRewriteContext::class);
         $this->app->scoped(PropertyBreachReports::class);
         $this->app->scoped(ResolvePublicPageableMorphTypesAction::class);
         $this->app->scoped(HydratePageLanguagesAction::class);
+
+        // `backup` and `redirects` were Capell's config keys before they were prefixed.
+        LegacyConfigFallback::carryRenamedKeys($this->app->make(Repository::class));
 
         config(['media-library.media_model' => Media::class]);
         if (config('capell.database.external_tables.tags', 'tags') !== 'tags'
@@ -378,7 +418,6 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         $this->app->register(MediaLibraryServiceProvider::class);
         $this->loadTranslationsFrom(__DIR__ . '/../../resources/lang', self::$name);
         $this->loadTranslationsFrom(__DIR__ . '/../../resources/lang', 'capell-core');
-        $this->app->make(PackageRegistryBootstrapper::class)->bootstrap();
 
         parent::registeringPackage();
     }
@@ -400,7 +439,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
     public function configurePackage(Package $package): void
     {
         $package->name(self::$name)
-            ->hasConfigFile(['backup', 'capell', 'capell-reporting', 'redirects'])
+            ->hasConfigFile(['capell-backup', 'capell', 'capell-reporting', 'capell-redirects'])
             ->hasTranslations();
 
         if (! $this->app->runningInConsole()) {
@@ -434,6 +473,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
             HealthCheckCommand::class,
             HealthCommand::class,
             InitializeScreenshotRecordStateFixtureCommand::class,
+            ExportSiteSpecCommand::class,
             ImportSiteSpecCommand::class,
             InstallExtensionCommand::class,
             ImportMarketplaceReceiptsCommand::class,
@@ -468,8 +508,12 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         ]);
     }
 
+    #[Override]
     public function packageRegistered(): void
     {
+        // Protected providers need the merged Marketplace instance configuration at first registration.
+        $this->app->make(PackageRegistryBootstrapper::class)->bootstrap();
+
         $this
             ->registerPublicationTransitions()
             ->registerMailMarkdownComponents()
@@ -590,6 +634,22 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
     private function registerOctaneStateReset(): self
     {
         $this->app->singleton(FlushResettableState::class);
+        $this->app->tag([SiteOwnedHosts::class], Resettable::TAG);
+
+        // A queued job is an operation too. Workers never see Octane's reset, so without
+        // this, state read from the shared store for one job would answer for every later
+        // job in the process. A sync job runs inside the operation that dispatched it, so
+        // flushing there would undo that operation's own state mid-flight.
+        $this->app->make(Dispatcher::class)->listen(
+            JobProcessing::class,
+            function (JobProcessing $event): void {
+                if ($event->job instanceof SyncJob) {
+                    return;
+                }
+
+                $this->app->make(FlushResettableState::class)->handle($this->app);
+            },
+        );
 
         if (! interface_exists(OperationTerminated::class)) {
             return $this;
@@ -602,6 +662,15 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
                 $application = $sandbox instanceof Application ? $sandbox : $this->app;
 
                 $application->make(FlushResettableState::class)->handle($application);
+            },
+        );
+
+        // State read while the worker booted would otherwise answer the first request,
+        // however long the worker then sat idle.
+        $this->app->make(Dispatcher::class)->listen(
+            WorkerStarting::class,
+            static function (WorkerStarting $event): void {
+                $event->app->make(FlushResettableState::class)->handle($event->app);
             },
         );
 
@@ -669,8 +738,9 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         $this->app->bindIf(AdminPanelUrlResolver::class, UnavailableAdminPanelUrlResolver::class);
         $this->app->bindIf(ExtensionEntitlements::class, NullExtensionEntitlements::class);
         $this->app->singletonIf(CommercialCatalogueStore::class);
+        $this->app->singletonIf(SignedPackageLicenceManifest::class);
         $this->app->singletonIf(ExtensionCommercialPolicy::class);
-        $this->app->bindIf(ResolvesHostAddresses::class, DnsHostAddressResolver::class);
+        $this->app->bindIf(ResolvesHostAddresses::class, ProcessHostAddressResolver::class);
         $this->app->bindIf(MediaUploadConfigurationFactory::class, SpatieMediaUploadConfigurationFactory::class);
         $this->app->bindIf(MediaUploadMetadataResolver::class, SpatieMediaUploadMetadataResolver::class);
         // Keep these legacy class names as strings so the compatibility binding
@@ -734,6 +804,10 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
             AutoUpdatesForAdvisoryRemediation::class], SecurityWeaknessRemediation::TAG);
         $this->app->singleton(OutboundEventRegistry::class);
         $this->app->singleton(BlueprintSubjectRegistry::class);
+        // Packages register models whose visible_from/visible_until the scheduled-publication sweep watches.
+        $this->app->singleton(ScheduledPublicationRegistry::class);
+        // Packages declare the cache keys their public output depends on without depending on Frontend.
+        $this->app->singleton(CacheDependencyRegistry::class);
         $this->app->booted(function (): void {
             // Tags are collected once per class here and again for every package
             // that boots late, inside PackageSurfaceRegistrar::duringPackageInstallation().
@@ -744,6 +818,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
             $this->app->make(OutboundEventRegistry::class)->freeze();
             $this->app->make(BlueprintSubjectRegistry::class)->freeze();
             $this->app->make(CapabilityRegistry::class)->freeze();
+            $this->app->make(ScheduledPublicationRegistry::class)->freeze();
         });
         $this->app->singleton(SubscriberRegistry::class);
         $this->app->alias(SubscriberRegistry::class, SubscriberManager::class);
@@ -1021,7 +1096,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
     {
         $this->registerSchedule(function (Schedule $schedule): void {
             // A run killed mid-way must not hold the backstop's lock for the default day.
-            $schedule->command('capell:public-read:reconcile')
+            RunScheduledCommandInProcess::schedule($schedule, 'capell:public-read:reconcile')
                 ->everyMinute()
                 ->withoutOverlapping(5)
                 ->onOneServer();
@@ -1032,11 +1107,11 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
 
     private function registerBackupPruneSchedule(): self
     {
-        if (! config('backup.prune_schedule_enabled', false)) {
+        if (! config('capell-backup.prune_schedule_enabled', false)) {
             return $this;
         }
 
-        $cron = config('backup.prune_schedule_cron', '0 3 * * 1');
+        $cron = config('capell-backup.prune_schedule_cron', '0 3 * * 1');
 
         if (! is_string($cron) || trim($cron) === '') {
             return $this;
@@ -1074,6 +1149,24 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         $this->app->singleton(SchedulerRunRecorder::class);
         $this->app->tag([SchedulerRunRecorder::class], Resettable::TAG);
         $this->app->bind(HostMetricsSource::class, LocalHostMetricsSource::class);
+        $this->app->bind(ServerSettingsReader::class, LocalServerSettingsReader::class);
+        $this->app->bind(HostBusyGate::class, HostLoadGate::class);
+
+        // Tasks listed in capell.health.host.deferrable_tasks are filtered as the scheduler starts, when every
+        // task is registered, and caught up once it has finished, so hosts need no code change.
+        Event::listen(ScheduledTaskFinished::class, static function (ScheduledTaskFinished $event): void {
+            resolve(DeferrableTaskPolicy::class)->recordRun($event->task);
+        });
+        Event::listen(CommandStarting::class, static function (CommandStarting $event): void {
+            if ($event->command === 'schedule:run' && resolve(DeferrableTaskPolicy::class)->listed() !== []) {
+                ApplyDeferrableTasksAction::run(resolve(Schedule::class));
+            }
+        });
+        Event::listen(CommandFinished::class, static function (CommandFinished $event): void {
+            if ($event->command === 'schedule:run' && resolve(DeferrableTaskPolicy::class)->listed() !== []) {
+                CatchUpDeferredTasksAction::run(resolve(Schedule::class));
+            }
+        });
 
         Event::listen(ScheduledTaskStarting::class, static function (): void {
             resolve(SchedulerRunRecorder::class)->starting();
@@ -1089,6 +1182,18 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
             })
                 ->name('capell:host-monitor-sample')
                 ->everyMinute();
+
+            $schedule->call(static function (): void {
+                resolve(RollUpHostLoadAction::class)->handle();
+            })
+                ->name('capell:host-monitor-rollup')
+                ->everyFiveMinutes();
+
+            $schedule->call(static function (): void {
+                resolve(PruneHostLoadRollupsAction::class)->handle();
+            })
+                ->name('capell:host-monitor-prune')
+                ->dailyAt('03:25');
         });
 
         return $this;
@@ -1099,7 +1204,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         if (config('capell.multi_node', false) === true) {
             // Every node must run this, so no onOneServer() and no shared overlap mutex.
             $this->registerSchedule(function (Schedule $schedule): void {
-                $schedule->command('capell:security:refresh-node')->everyFiveMinutes();
+                RunScheduledCommandInProcess::schedule($schedule, 'capell:security:refresh-node')->everyFiveMinutes();
             });
         }
 
@@ -1317,7 +1422,9 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
 
     private function configureMailMarkdownLogo(): self
     {
-        $this->app->booted(function (): void {
+        // Resolving the logo reads the default site, so it waits for the first
+        // markdown mail header render instead of probing the database at boot.
+        View::composer('mail::header', static function (): void {
             ConfigureMailMarkdownLogoAction::run();
         });
 

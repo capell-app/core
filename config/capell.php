@@ -39,6 +39,12 @@ return [
         ],
     ],
 
+    'schedule' => [
+        // Run the per-minute and five-minute Capell commands inside the schedule:run process
+        // instead of starting a PHP process for each, which boots the application every time.
+        'run_frequent_commands_in_process' => (bool) env('CAPELL_SCHEDULE_IN_PROCESS', false),
+    ],
+
     'cache_path' => env('CAPELL_CACHE_PATH', base_path('bootstrap/cache/capell')),
     'cache_ttl' => (int) env('CAPELL_CACHE_TTL', 60),
     'cache_lock_seconds' => (int) env('CAPELL_CACHE_LOCK_SECONDS', 30),
@@ -90,6 +96,12 @@ return [
                 'warning_used_percent' => (float) env('CAPELL_HEALTH_HOST_SWAP_WARNING', 60),
                 'critical_used_percent' => (float) env('CAPELL_HEALTH_HOST_SWAP_CRITICAL', 90),
             ],
+            // Limits behind the Recommended settings panel on Site Health: the share of RAM PHP-FPM
+            // workers may use, and the most workers worth running for each core.
+            'fpm' => [
+                'memory_share' => (float) env('CAPELL_HEALTH_HOST_FPM_MEMORY_SHARE', 0.6),
+                'max_children_per_core' => (int) env('CAPELL_HEALTH_HOST_FPM_MAX_CHILDREN_PER_CORE', 10),
+            ],
             // CPU seconds one scheduler run uses, as a share of what the cores can supply in a minute,
             // and how long a run takes. A run that lasts a minute overlaps the next one.
             'scheduler' => [
@@ -98,6 +110,29 @@ return [
                 'warning_wall_seconds' => (int) env('CAPELL_HEALTH_HOST_SCHEDULER_WALL_WARNING', 50),
                 'critical_wall_seconds' => (int) env('CAPELL_HEALTH_HOST_SCHEDULER_WALL_CRITICAL', 90),
             ],
+            // Hourly rollups of the readings, kept in the database so Site Health can show day and
+            // week trends. Only the node name, load, memory, swap, queue depth and command names are stored.
+            'history' => [
+                'enabled' => (bool) env('CAPELL_HEALTH_HOST_HISTORY_ENABLED', true),
+                // Days of hourly rollups kept; values are held between 1 and 365.
+                'retention_days' => (int) env('CAPELL_HEALTH_HOST_HISTORY_RETENTION_DAYS', 90),
+                // Waiting jobs, on the default queue, at which Site Health suggests another worker.
+                'queue_backlog_warning' => (int) env('CAPELL_HEALTH_HOST_QUEUE_BACKLOG_WARNING', 500),
+            ],
+            // Lets scheduled work that can wait step aside while this server is critically busy.
+            'defer' => [
+                'enabled' => (bool) env('CAPELL_HEALTH_HOST_DEFER_ENABLED', false),
+                // A deferred task runs once after this long even when the server stays busy, so it cannot be starved.
+                'max_minutes' => (int) env('CAPELL_HEALTH_HOST_DEFER_MAX_MINUTES', 120),
+            ],
+            // Scheduled tasks, named as the scheduler names them (a command such as capell:backup:prune,
+            // or the name given to a closure or job), that may skip runs while this server is critically
+            // busy. Empty leaves every task alone. A task that skipped runs is caught up once, as soon as
+            // the server is no longer busy or at the catch-up time, whichever comes first, and at most
+            // once a day.
+            'deferrable_tasks' => array_values(array_filter(array_map(trim(...), explode(',', (string) env('CAPELL_HEALTH_HOST_DEFERRABLE_TASKS', ''))))),
+            // Time of day (HH:MM, server time) after which a task that skipped runs is caught up even if the server is still busy.
+            'deferrable_catch_up_at' => (string) env('CAPELL_HEALTH_HOST_DEFERRABLE_CATCH_UP_AT', '04:00'),
             'notifications' => [
                 'enabled' => (bool) env('CAPELL_HEALTH_HOST_NOTIFY', false),
                 // Any of: mail, webhook.

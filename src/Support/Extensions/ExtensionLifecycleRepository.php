@@ -31,6 +31,9 @@ final class ExtensionLifecycleRepository
 
     private bool $recordsPreloaded = false;
 
+    /** Whether a lifecycle read failed since the caches were last cleared, so an answer rests on a missing record. */
+    private bool $readFailed = false;
+
     /**
      * The resolved lifecycle table name. Every installed-package check probes
      * this table, and a bootstrap performs thousands of those checks, so the
@@ -271,12 +274,43 @@ final class ExtensionLifecycleRepository
         $extension?->delete();
     }
 
+    /**
+     * Reads the durable lifecycle record, bypassing this repository's caches, with a
+     * shared lock for package admission. A disable, quarantine or uninstall updates
+     * or deletes the same row and so needs an exclusive lock: it waits for admitted
+     * work to commit, and admission waits for it.
+     */
+    public function freshRecordForAdmission(string $name): ?CapellExtension
+    {
+        if (! $this->tableExists()) {
+            return null;
+        }
+
+        return CapellExtension::query()->where('composer_name', $name)->sharedLock()->first();
+    }
+
+    /**
+     * Whether answers now come from the lifecycle table itself. Before the database is bound, while
+     * the table is missing or after a failed read, answers rest on the absence of records and must be
+     * asked again rather than kept.
+     */
+    public function recordsLoaded(): bool
+    {
+        return $this->recordsPreloaded && ! $this->readFailed;
+    }
+
+    public function connectionName(): string
+    {
+        return (string) (new CapellExtension)->getConnection()->getName();
+    }
+
     public function clear(): void
     {
         $this->statusCache = [];
         $this->runtimeGateCache = [];
         $this->recordCache = [];
         $this->recordsPreloaded = false;
+        $this->readFailed = false;
 
         // Forget only a name this repository resolved: resolving here would
         // make a clear throw on invalid table configuration.
@@ -286,8 +320,12 @@ final class ExtensionLifecycleRepository
         }
     }
 
-    /** @param Collection<string, PackageData> $packages */
-    private function record(string $name, Collection $packages): ?CapellExtension
+    /**
+     * @internal Read the lifecycle record used by the runtime gate.
+     *
+     * @param  Collection<string, PackageData>  $packages
+     */
+    public function record(string $name, Collection $packages): ?CapellExtension
     {
         if (array_key_exists($name, $this->recordCache)) {
             return $this->recordCache[$name];
@@ -308,6 +346,8 @@ final class ExtensionLifecycleRepository
                 ->where('composer_name', $name)
                 ->first();
         } catch (Throwable) {
+            $this->readFailed = true;
+
             return null;
         }
     }

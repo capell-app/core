@@ -16,6 +16,7 @@ use Capell\Core\Models\Language;
 use Capell\Core\Models\Page;
 use Capell\Core\Models\PageUrl;
 use Capell\Core\Models\Site;
+use Capell\Core\Models\SiteDomain;
 use Capell\Core\Models\Translation;
 use Capell\Core\Support\Url\UrlPathNormalizer;
 use Illuminate\Contracts\Database\Eloquent\Builder as BuilderContract;
@@ -194,9 +195,11 @@ class ResolvePublicPageByUrlAction
         }
 
         $site->loadMissing('siteDomains');
-        $siteDomain = $site->siteDomains->firstWhere('language_id', $language->getKey());
+        $siteDomain = $site->siteDomains->first(
+            static fn (SiteDomain $domain): bool => $domain->language_id === $language->getKey() && $domain->status,
+        );
 
-        // Without a domain for the language the URL has no address to move to: answer not found.
+        // Without an enabled domain for the language the URL has no address to move to: answer not found.
         if ($siteDomain === null) {
             return null;
         }
@@ -267,15 +270,25 @@ class ResolvePublicPageByUrlAction
     {
         $site->loadMissing('siteDomains');
 
+        // A sibling URL whose language domain is disabled keeps a null relation, so the head's
+        // hreflang cluster and any language switcher skip it instead of linking to a dead host.
         foreach ($page->getRelation('pageUrls') as $relatedPageUrl) {
-            $siteDomain = $site->siteDomains->firstWhere('language_id', $relatedPageUrl->language_id);
-
-            $relatedPageUrl->setRelation('siteDomain', $siteDomain);
+            $relatedPageUrl->setRelation(
+                'siteDomain',
+                $site->siteDomains->first(
+                    static fn (SiteDomain $domain): bool => $domain->status && $domain->language_id === $relatedPageUrl->language_id,
+                ),
+            );
         }
 
-        $siteDomain = $site->siteDomains->firstWhere('language_id', $pageUrl->language_id);
-
-        $pageUrl->setRelation('siteDomain', $siteDomain);
+        // The URL being served was reached through its own domain, so it keeps that domain even if
+        // it has since been disabled: its canonical must not throw or vanish mid-request.
+        $pageUrl->setRelation(
+            'siteDomain',
+            $site->siteDomains->first(
+                static fn (SiteDomain $domain): bool => $domain->language_id === $pageUrl->language_id && $domain->status,
+            ) ?? $site->siteDomains->firstWhere('language_id', $pageUrl->language_id),
+        );
 
         $page->setRelation('pageUrl', $pageUrl);
     }

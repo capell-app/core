@@ -47,6 +47,7 @@ use Capell\Core\Contracts\PublicRead\PublicArtefactFence;
 use Capell\Core\Contracts\PublicRead\PublicPageReadEligibility;
 use Capell\Core\Contracts\PublicRead\SchedulesPublicReadTransitions;
 use Capell\Core\Contracts\Publishing\PublicationReadinessContributor;
+use Capell\Core\Contracts\Publishing\SchedulesPublication;
 use Capell\Core\Contracts\Reporting\Reporter;
 use Capell\Core\Contracts\SiteSpec\SiteSpecApplier;
 use Capell\Core\Data\BlueprintSubjectDescriptorData;
@@ -123,6 +124,7 @@ use Capell\Core\Facades\CapellCore;
 use Capell\Core\Facades\CapellDatabase;
 use Capell\Core\Http\Middleware\CapPublicReadResponseCaching;
 use Capell\Core\Support\BlueprintSubjectRegistry;
+use Capell\Core\Support\Cache\CacheDependencyRegistry;
 use Capell\Core\Support\Database\DatabasePlatformRegistry;
 use Capell\Core\Support\Extensions\ExtensionOrderResolver;
 use Capell\Core\Support\Extensions\ExtensionPosition;
@@ -140,6 +142,7 @@ use Capell\Core\Support\PublicRead\PublicReadResponseStamps;
 use Capell\Core\Support\PublicRead\PublicReadScanner;
 use Capell\Core\Support\PublicRead\PublicReadWithdrawalSteps;
 use Capell\Core\Support\Publishing\PublicationReadinessRegistry;
+use Capell\Core\Support\Publishing\ScheduledPublicationRegistry;
 use Capell\Core\Support\Reporting\LogChannelReporter;
 use Capell\Core\Support\Settings\SettingsSchemaRegistry;
 use Capell\Core\Testing\ExtensionTestHarness;
@@ -235,6 +238,9 @@ final class BuildExtensionSurfaceCatalogAction
             $this->entry('core.contract.public-artefact-fence', 'contract', PublicArtefactFence::class, ExtensionSurfaceStability::Experimental, "An out-of-band artefact store's lease-free lock, shared by its writes and withdrawals."),
             $this->entry('core.event.public-read-eligibility-changed', 'event', PublicReadEligibilityChanged::class, ExtensionSurfaceStability::Experimental, 'Signals that stored public projections must be withdrawn or regenerated.'),
             $this->entry('core.contract.schedules-public-read-transitions', 'contract', SchedulesPublicReadTransitions::class, ExtensionSurfaceStability::Experimental, "Earliest scheduled change to a contributor's public-read decisions, bounding stored projections."),
+            $this->entry('core.contract.schedules-publication', 'contract', SchedulesPublication::class, ExtensionSurfaceStability::Experimental, 'A package model with its own visible_from and visible_until, naming the surrogate keys the scheduled-publication sweep purges.'),
+            $this->entry('core.registry.cache-dependency', 'registry', CacheDependencyRegistry::class, ExtensionSurfaceStability::Experimental, 'Boot-time model cache dependencies a package declares without depending on Frontend.'),
+            $this->entry('core.registry.scheduled-publication', 'registry', ScheduledPublicationRegistry::class, ExtensionSurfaceStability::Experimental, 'Boot-time registry of package models the scheduled-publication sweep watches.'),
             $this->entry('core.dto.public-read-stamp', 'dto', PublicReadStampData::class, ExtensionSurfaceStability::Experimental, 'Public-read rules a stored projection was built under: revision and validity.'),
             $this->entry('core.support.public-read-eligibility-state', 'support', PublicReadEligibilityState::class, ExtensionSurfaceStability::Experimental, 'Stamps stored public projections and decides whether a stored copy is still current.'),
             $this->entry('core.support.public-read-projection-headers', 'support', PublicReadProjectionHeaders::class, ExtensionSurfaceStability::Experimental, 'Revalidation headers and eligibility-aware validators for public projections.'),
@@ -348,6 +354,9 @@ final class BuildExtensionSurfaceCatalogAction
             $this->entry('admin.registry.surface-contribution', 'registry', 'Capell\\Admin\\Support\\AdminSurfaceContributionRegistry', ExtensionSurfaceStability::Experimental, 'Owner-aware ordered Admin surface contributions.', owner: 'capell-app/admin'),
             $this->entry('admin.tag.admin-tool-item', 'tagged-service', 'capell-admin:admin-tool-items', ExtensionSurfaceStability::Experimental, 'Container tag for admin header tool contributions.', owner: 'capell-app/admin'),
             $this->entry('marketplace.contract.composer-change-publisher', 'contract', 'Capell\\Marketplace\\Contracts\\MarketplaceComposerChangePublisher', ExtensionSurfaceStability::Experimental, 'Typed optional Composer change publication boundary.', owner: 'capell-app/marketplace'),
+            $this->entry('marketplace.contract.composer-requirement-remover', 'contract', 'Capell\\Marketplace\\Contracts\\MarketplaceComposerRequirementRemover', ExtensionSurfaceStability::Experimental, "Optional publisher companion that drops an uninstalled extension's requirement from the deployment source.", owner: 'capell-app/marketplace'),
+            $this->entry('marketplace.contract.composer-removal-authorizer', 'contract', 'Capell\\Marketplace\\Contracts\\MarketplaceComposerRemovalAuthorizer', ExtensionSurfaceStability::Experimental, 'Authorises deployment requirement removal at enqueue time and revalidates approval after uninstall.', owner: 'capell-app/marketplace'),
+            $this->entry('marketplace.dto.composer-removal-request', 'dto', 'Capell\\Marketplace\\Data\\MarketplaceComposerRemovalRequestData', ExtensionSurfaceStability::Experimental, 'Typed Composer requirement removal request data.', owner: 'capell-app/marketplace'),
             $this->entry('marketplace.dto.composer-publication-request', 'dto', 'Capell\\Marketplace\\Data\\MarketplaceComposerPublicationRequestData', ExtensionSurfaceStability::Experimental, 'Typed Composer publication request data.', owner: 'capell-app/marketplace'),
             $this->entry('marketplace.dto.composer-publication-result', 'dto', 'Capell\\Marketplace\\Data\\MarketplaceComposerPublicationResultData', ExtensionSurfaceStability::Experimental, 'Typed Composer publication result data.', owner: 'capell-app/marketplace'),
             $this->entry('marketplace.tag.composer-change-publisher', 'tagged-service', 'capell.marketplace.composer-change-publisher', ExtensionSurfaceStability::Experimental, 'Container tag for optional Composer change publishers.', owner: 'capell-app/marketplace'),
