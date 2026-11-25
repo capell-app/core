@@ -19,6 +19,7 @@ use Capell\Core\Actions\Translations\HydratePageLanguagesAction;
 use Capell\Core\Console\Commands\AdoptTableCommand;
 use Capell\Core\Console\Commands\AgentSchemaVerifyCommand;
 use Capell\Core\Console\Commands\AuditSiteDomainOriginsCommand;
+use Capell\Core\Console\Commands\AuditStoredMediaUploadsCommand;
 use Capell\Core\Console\Commands\BackupHealthCommand;
 use Capell\Core\Console\Commands\CacheComponentsCommand;
 use Capell\Core\Console\Commands\ClearComponentsCacheCommand;
@@ -60,6 +61,7 @@ use Capell\Core\Console\Commands\PublishComponentsCommand;
 use Capell\Core\Console\Commands\PublishMigrationsCommand;
 use Capell\Core\Console\Commands\PurgeSoftDeletedMediaCommand;
 use Capell\Core\Console\Commands\ReconcilePublicReadProjectionsCommand;
+use Capell\Core\Console\Commands\ReconcileSitePublicationMilestonesCommand;
 use Capell\Core\Console\Commands\ReleaseExtensionQuarantineCommand;
 use Capell\Core\Console\Commands\ReplayInboundWebhookEventCommand;
 use Capell\Core\Console\Commands\RestoreBackupCommand;
@@ -127,6 +129,7 @@ use Capell\Core\Listeners\PageTranslationSavedListener;
 use Capell\Core\Listeners\RebuildContentGraphOnPageRollbackSubscriber;
 use Capell\Core\Listeners\RebuildPackageCacheAfterPackageDiscovery;
 use Capell\Core\Listeners\RecordSitePublishedOnHomePagePublication;
+use Capell\Core\Listeners\RecordSitePublishedOnHomePageSave;
 use Capell\Core\Listeners\ReindexPropertyReferencesOnCascadeListener;
 use Capell\Core\Listeners\SyncPromotedPropertyFieldsOnPageSaved;
 use Capell\Core\Listeners\WithdrawPublicReadProjectionsOnEligibilityChanged;
@@ -223,6 +226,7 @@ use Capell\Core\Support\Marketplace\ExtensionCommercialPolicy;
 use Capell\Core\Support\Marketplace\NullExtensionEntitlements;
 use Capell\Core\Support\Marketplace\SignedPackageLicenceManifest;
 use Capell\Core\Support\Media\BackendResolver;
+use Capell\Core\Support\Media\GuardedFileAdder;
 use Capell\Core\Support\Media\ImageUrlPolicy;
 use Capell\Core\Support\Media\MediaCompositionGuidanceRegistry;
 use Capell\Core\Support\Media\SpatieMediaUploadConfigurationFactory;
@@ -265,6 +269,7 @@ use Capell\Core\Support\Publishing\ScheduledPublicationRegistry;
 use Capell\Core\Support\Redirects\PageUrlRedirectHitRecorder;
 use Capell\Core\Support\Redirects\PageUrlRedirectResolver;
 use Capell\Core\Support\Renderables\RenderableRegistry;
+use Capell\Core\Support\Runtime\RuntimeRoleBootstrap;
 use Capell\Core\Support\Runtime\RuntimeRoleCachePaths;
 use Capell\Core\Support\Runtime\RuntimeRoleProviderPolicy;
 use Capell\Core\Support\Runtime\RuntimeRoleResolver;
@@ -341,6 +346,7 @@ use Laravel\Octane\Events\WorkerStarting;
 use Override;
 use Spatie\LaravelData\Support\Caching\DataStructureCache;
 use Spatie\LaravelPackageTools\Package;
+use Spatie\MediaLibrary\MediaCollections\FileAdder;
 use Spatie\MediaLibrary\MediaLibraryServiceProvider;
 use Spatie\Permission\Models\Role;
 use Throwable;
@@ -408,6 +414,9 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         LegacyConfigFallback::carryRenamedKeys($this->app->make(Repository::class));
 
         config(['media-library.media_model' => Media::class]);
+        // Every media-library write resolves its adder here, so imports, packages and
+        // forged requests meet the same upload content policy as the admin forms.
+        $this->app->bind(FileAdder::class, GuardedFileAdder::class);
         if (config('capell.database.external_tables.tags', 'tags') !== 'tags'
             && InstalledVersions::isInstalled('spatie/laravel-tags')
             && config('tags.tag_model', TableName::SPATIE_TAG_MODEL) === TableName::SPATIE_TAG_MODEL) {
@@ -495,10 +504,12 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
             PruneActivityBucketsCommand::class,
             PruneActivityVisitorsCommand::class,
             PruneEditorScratchDraftsCommand::class,
+            ReconcileSitePublicationMilestonesCommand::class,
             PruneMetricDailyRollupsCommand::class,
             RestoreBackupCommand::class,
             RuntimeRefreshCommand::class,
             ThemeDoctorCommand::class,
+            AuditStoredMediaUploadsCommand::class,
             PurgeSoftDeletedMediaCommand::class,
             PublishComponentsCommand::class,
             PublishMigrationsCommand::class,
@@ -525,6 +536,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
             ->registerActivitySettings()
             ->registerMetricSchedule()
             ->registerEditorScratchDraftSchedule()
+            ->registerSitePublicationMilestoneSchedule()
             ->registerInboundWebhookPruneSchedule()
             ->registerPublicReadWithdrawalRetrySchedule()
             ->registerBackupPruneSchedule()
@@ -567,6 +579,7 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
         );
 
         Event::listen(PublicationTransitioned::class, RecordSitePublishedOnHomePagePublication::class);
+        Event::listen(PageSaved::class, RecordSitePublishedOnHomePageSave::class);
         // Sites that were live before go-live dates were recorded.
         $this->app->tag([RecordPublishedSitesUpgradeStep::class], 'capell.upgrade-steps');
         $this->app->tag([AiProvenancePageStateContributor::class], PageStateContributor::TAG);
@@ -590,6 +603,11 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
                 ),
             );
         }
+
+        RuntimeRoleBootstrap::assertConfigured(
+            $this->app,
+            $this->app->make(RuntimeRoleSelectionData::class),
+        );
 
         $this->app->singletonIf(RuntimeRoleProviderPolicy::class);
         $this->app->singletonIf(
@@ -1057,6 +1075,19 @@ class CapellServiceProvider extends AbstractPackageServiceProvider
                 ->dailyAt('01:30')
                 ->timezone('UTC')
                 ->withoutOverlapping()
+                ->onOneServer();
+        });
+
+        return $this;
+    }
+
+    /** Home pages that went public with nothing to announce it, such as a scheduled time passing. */
+    private function registerSitePublicationMilestoneSchedule(): self
+    {
+        $this->registerSchedule(function (Schedule $schedule): void {
+            RunScheduledCommandInProcess::schedule($schedule, 'capell:sites:record-published')
+                ->everyFiveMinutes()
+                ->withoutOverlapping(5)
                 ->onOneServer();
         });
 

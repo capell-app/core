@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 return [
+    'site_has_retained_records' => 'This site cannot be permanently deleted because it holds records that must be kept: :records. Release them or move them to another site first.',
     'language_fallback_cycle' => 'That language already falls back to this one, so choosing it would create a loop. Choose a language that does not lead back here.',
     'language_fallback_self' => 'A language cannot fall back to itself. Choose a different language, or leave the fallback empty so untranslated pages show a not-found page.',
     'site_spec_site_name_raced' => 'Site :id, called ":name", was created while this import ran. No changes were made. Run the import again to update that site.',
@@ -55,6 +56,7 @@ return [
     'site_spec_publish_refused' => 'Nothing was published. These pages could not be published: :pages.',
     'site_spec_publish_complete' => '{1} Published :count page of ":name" (#:id) and cleared its caches.|[0,*] Published :count pages of ":name" (#:id) and cleared its caches.',
     'site_spec_publish_no_user' => 'Name the user to publish as with --user (an email address or ID).',
+    'site_spec_shared_rows_differ' => 'This spec would change a language or theme that other sites already use: :differences. No changes were made. Edit the spec to match the existing values, or re-run with --overwrite-shared to replace them.',
     'site_spec_options_conflict' => 'Use --plan, --diff, --site and --publish on their own, without the privacy audit and repair options. --plan and --diff cannot be combined with --publish.',
     'site_spec_diff_item' => ':kind ":key": :action',
     'site_spec_diff_field' => '  :field',
